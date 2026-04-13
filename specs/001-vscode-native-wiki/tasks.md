@@ -38,7 +38,7 @@ description: "Task list for VS Code-Native Wiki implementation"
 - [X] T016 [US1] Implement idempotent update behavior: if a concept already has a page, update it instead of duplicating (use `tools/ingest/backlink.py` and `tools/ingest/validator.py`)
 - [X] T017 [US1] Ensure each generated page includes `Links` entry referencing the original `/raw/<filename>` (add check in `tools/ingest/draft.py` and `validator.py`)
 - [X] T018 [US1] Implement `Needs Source` note creation for assertions that cannot be grounded in `/raw` (create `wiki/needs-source/` or `wiki/2026XXXXXX_needs-source.md` behavior)
-- [ ] T019 [US1] Integration test: place `specs/001-vscode-native-wiki/testdata/sample.pdf` in `/raw`, run `tools/ingest/ingest.py run`, assert 5–10 pages created under `/wiki` and each page's `Links` includes `/raw/sample.pdf` (tests/integration/test_ingest.py)
+- [X] T019 [US1] Integration test: place `specs/001-vscode-native-wiki/testdata/sample.pdf` in `/raw`, run `tools/ingest/ingest.py run`, assert 5–10 pages created under `/wiki` and each page's `Links` includes `/raw/sample.pdf` (tests/integration/test_ingest.py)
 - [X] T020 [US1] Wire `index rebuild` to update `/wiki/index.md` and `/wiki/glossary.md` after a successful ingest (implement in `tools/ingest/indexer.py`)
 
 ---
@@ -49,8 +49,8 @@ description: "Task list for VS Code-Native Wiki implementation"
 
 - [X] T021 [US2] Implement query handler `tools/query/query.py` that loads relevant `/wiki` pages, forms context, and produces an answer with `Links` to supporting pages
 - [X] T022 [US2] Implement decision archive writer `tools/query/archive_decision.py` that writes `/wiki/decisions/YYYYMMDDNN.md` containing the transcript, `Links`, and a `Summary`
-- [ ] T023 [US2] Add integration tests: simulate a query, assert returned answer references supporting `/wiki` pages and that a decision page is created (tests/integration/test_query.py)
-- [ ] T024 [US2] Add a VS Code task or command configuration (`.vscode/tasks.json` or extension snippet) to run a query and open the generated decision page
+- [X] T023 [US2] Add integration tests: simulate a query, assert returned answer references supporting `/wiki` pages and that a decision page is created (tests/integration/test_query.py)
+- [X] T024 [US2] Add a VS Code task or command configuration (`.vscode/tasks.json` or extension snippet) to run a query and open the generated decision page
 
 ---
 
@@ -61,15 +61,15 @@ description: "Task list for VS Code-Native Wiki implementation"
 - [X] T025 [US3] Implement orphan discovery `tools/lint/orphan_check.py` that lists pages with zero inbound `[[WikiLinks]]` and outputs `reports/orphans-YYYYMMDD.md`
 - [X] T026 [US3] Implement claim-diff heuristics in `tools/lint/claim_diff.py` to detect contradictory assertions that cite different `/raw` sources
 - [X] T027 [US3] Implement remediation report generator `tools/lint/remediation_report.py` that suggests actions (merge/split/add-source) and can output a patch or PR template
-- [ ] T028 [US3] Integration tests for linting: create synthetic pages that trigger orphan and conflict rules and assert detection (tests/integration/test_lint.py)
+- [X] T028 [US3] Integration tests for linting: create synthetic pages that trigger orphan and conflict rules and assert detection (tests/integration/test_lint.py)
 
 ---
 
-## Phase N: Polish & Cross-Cutting Concerns
+## Phase N: Polish & Cross-Cutting Concerns ✓ COMPLETE
 
-- [ ] T029 [P] Documentation: Write `specs/001-vscode-native-wiki/quickstart.md` with step-by-step ingestion, query, and lint examples
-- [ ] T030 [P] VS Code integration: add `.vscode/tasks.json` entries and recommended extensions list in `.vscode/extensions.json` for Foam + Copilot
-- [ ] T031 [P] CI: Add `.github/workflows/test.yml` to run unit and integration tests on push/PR
+- [X] T029 [P] Documentation: Write `specs/001-vscode-native-wiki/quickstart.md` with step-by-step ingestion, query, and lint examples
+- [X] T030 [P] VS Code integration: add `.vscode/tasks.json` entries and recommended extensions list in `.vscode/extensions.json` for Foam + Copilot
+- [X] T031 [P] CI: Add `.github/workflows/test.yml` to run unit and integration tests on push/PR
 - [ ] T032 [P] UX: Add interactive preview CLI option `ingest.py --preview` to inspect drafts before writing to `/wiki`
 - [ ] T033 [ ] Create `specs/001-vscode-native-wiki/tasks.md` acceptance check: validate that each task path exists or has a follow-up task to create it
 
