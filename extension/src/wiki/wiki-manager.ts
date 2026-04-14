@@ -192,6 +192,7 @@ export class WikiManager {
         tags: parsed.metadata.tags || [],
         links: links,
         sourceUri,
+        sourceReferences: this.extractSourceReferences(parsed.metadata, parsed.content),
       };
     } catch (error) {
       this.logger.error(`Failed to get page ${pageId}: ${String(error)}`);
@@ -219,11 +220,48 @@ export class WikiManager {
     }
   }
 
+  getSourceReferences(page: WikiPage): string[] {
+    return page.sourceReferences || [];
+  }
+
+  private extractSourceReferences(
+    metadata: FrontmatterMetadata,
+    content: string
+  ): string[] {
+    const references = new Set<string>();
+
+    if (typeof metadata.source === 'string' && metadata.source.trim().length > 0) {
+      references.add(this.normalizeSourceReference(metadata.source));
+    }
+
+    const rawPathMatches = content.match(/\/raw\/[^\s)\]]+/g) || [];
+    for (const match of rawPathMatches) {
+      references.add(match.replace(/[.,;:]+$/, ''));
+    }
+
+    return Array.from(references);
+  }
+
+  private normalizeSourceReference(source: string): string {
+    if (source.startsWith('/raw/')) {
+      return source;
+    }
+
+    return `/raw/${source.replace(/^\/+/, '')}`;
+  }
+
   /**
    * Get the wiki directory path
    */
   getWikiDir(): string {
     return this.wikiDir;
+  }
+
+  /**
+   * Get the raw directory path
+   */
+  getRawDir(): string {
+    return this.rawDir;
   }
 
   /**

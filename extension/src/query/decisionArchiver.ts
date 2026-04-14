@@ -22,6 +22,11 @@ export interface ArchivedDecision {
   conversationLength: number;
 }
 
+export interface DecisionEvidence {
+  supportingPages?: string[];
+  supportingSources?: string[];
+}
+
 export class DecisionArchiver {
   private logger: Logger;
   private wikiDir: string;
@@ -44,7 +49,8 @@ export class DecisionArchiver {
   async archiveConversation(
     query: string,
     conversation: ConversationEntry[],
-    supportingPages?: string[]
+    supportingPages?: string[],
+    decisionEvidence?: DecisionEvidence
   ): Promise<ArchivedDecision | null> {
     try {
       const now = new Date();
@@ -55,7 +61,7 @@ export class DecisionArchiver {
       const filepath = path.join(this.decisionsDir, filename);
 
       // Create page content
-      const pageContent = this.formatDecisionPage(query, conversation, supportingPages, now);
+      const pageContent = this.formatDecisionPage(query, conversation, supportingPages, now, decisionEvidence);
 
       // Write to file
       fs.writeFileSync(filepath, pageContent, 'utf-8');
@@ -115,37 +121,74 @@ export class DecisionArchiver {
     query: string,
     conversation: ConversationEntry[],
     supportingPages?: string[],
-    timestamp?: Date
+    timestamp?: Date,
+    decisionEvidence?: DecisionEvidence
   ): string {
     const date = timestamp || new Date();
     const created = date.toISOString();
+    const pageTitle = `Decision - ${this.extractPageTitle(query)}`;
+    const summary = `Archived decision for query: ${this.extractPageTitle(query)}`;
+    const tags = ['decision', 'copilot-chat', 'archived'];
+    const combinedLinks = Array.from(
+      new Set([...(supportingPages || []).map((page) => `[[${page}]]`), ...(decisionEvidence?.supportingSources || [])])
+    );
 
     const lines: string[] = [];
 
     // YAML frontmatter
     lines.push('---');
-    lines.push(`title: Decision - ${this.extractPageTitle(query)}`);
+    lines.push(`title: ${this.quoteYaml(pageTitle)}`);
+    lines.push(`summary: ${this.quoteYaml(summary)}`);
     lines.push(`created: ${created}`);
     lines.push(`modified: ${created}`);
-
-    // Tags
-    const tags = ['decision', 'copilot-chat', 'archived'];
     lines.push(`tags: [${tags.map((t) => `"${t}"`).join(', ')}]`);
+
+    if (combinedLinks.length > 0) {
+      lines.push('links:');
+      for (const link of combinedLinks) {
+        lines.push(`  - ${this.quoteYaml(link)}`);
+      }
+    }
 
     lines.push('---');
     lines.push('');
 
     // Main heading
-    lines.push('# Decision');
+    lines.push(`# ${pageTitle}`);
+    lines.push('');
+
+    lines.push('## Summary');
+    lines.push(summary);
+    lines.push('');
+
+    lines.push('## Tags');
+    for (const tag of tags) {
+      lines.push(`- ${tag}`);
+    }
+    lines.push('');
+
+    lines.push('## Links');
+    lines.push('');
+
+    if (combinedLinks.length > 0) {
+      for (const link of combinedLinks) {
+        lines.push(`- ${link}`);
+      }
+    } else {
+      lines.push('- (No supporting links recorded)');
+    }
+
+    lines.push('');
+    lines.push('## Content');
     lines.push('');
 
     // Original question
-    lines.push('## Question');
+    lines.push('### Question');
     lines.push(query);
     lines.push('');
 
     // Conversation transcript
-    lines.push('## Conversation');
+    lines.push('### Conversation');
     lines.push('');
 
     for (const entry of conversation) {
@@ -154,15 +197,19 @@ export class DecisionArchiver {
       lines.push('');
     }
 
-    // Supporting wiki pages
-    if (supportingPages && supportingPages.length > 0) {
-      lines.push('## Supporting Pages');
-      lines.push('');
-      for (const page of supportingPages) {
-        lines.push(`- [[${page}]]`);
-      }
-      lines.push('');
+    lines.push('### Rationale');
+    lines.push('');
+    lines.push('- Answer archived from the grounded wiki query flow.');
+
+    if (supportingPages?.length) {
+      lines.push(`- Supporting wiki pages: ${supportingPages.join(', ')}`);
     }
+
+    if (decisionEvidence?.supportingSources?.length) {
+      lines.push(`- Supporting raw sources: ${decisionEvidence.supportingSources.join(', ')}`);
+    }
+
+    lines.push('');
 
     // Metadata
     lines.push('## Metadata');
@@ -173,9 +220,17 @@ export class DecisionArchiver {
       lines.push(`- **Supporting Pages**: ${supportingPages.length}`);
     }
 
+    if (decisionEvidence?.supportingSources?.length) {
+      lines.push(`- **Supporting Sources**: ${decisionEvidence.supportingSources.length}`);
+    }
+
     lines.push('');
 
     return lines.join('\n');
+  }
+
+  private quoteYaml(value: string): string {
+    return `"${value.replace(/"/g, '\\"')}"`;
   }
 
   /**

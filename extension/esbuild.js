@@ -11,7 +11,7 @@ const baseConfig = {
   bundle: true,
   platform: 'node',
   target: 'ES2020',
-  external: ['vscode'],
+  external: ['vscode', 'canvas'],
   outfile: 'dist/extension.js',
   sourcemap: !isProduction,
   minify: isProduction,
