@@ -22,6 +22,11 @@ export interface ArchivedDecision {
   conversationLength: number;
 }
 
+export interface DecisionEvidence {
+  supportingPages?: string[];
+  supportingSources?: string[];
+}
+
 export class DecisionArchiver {
   private logger: Logger;
   private wikiDir: string;
@@ -44,7 +49,8 @@ export class DecisionArchiver {
   async archiveConversation(
     query: string,
     conversation: ConversationEntry[],
-    supportingPages?: string[]
+    supportingPages?: string[],
+    decisionEvidence?: DecisionEvidence
   ): Promise<ArchivedDecision | null> {
     try {
       const now = new Date();
@@ -55,7 +61,7 @@ export class DecisionArchiver {
       const filepath = path.join(this.decisionsDir, filename);
 
       // Create page content
-      const pageContent = this.formatDecisionPage(query, conversation, supportingPages, now);
+      const pageContent = this.formatDecisionPage(query, conversation, supportingPages, now, decisionEvidence);
 
       // Write to file
       fs.writeFileSync(filepath, pageContent, 'utf-8');
@@ -115,7 +121,8 @@ export class DecisionArchiver {
     query: string,
     conversation: ConversationEntry[],
     supportingPages?: string[],
-    timestamp?: Date
+    timestamp?: Date,
+    decisionEvidence?: DecisionEvidence
   ): string {
     const date = timestamp || new Date();
     const created = date.toISOString();
@@ -164,6 +171,15 @@ export class DecisionArchiver {
       lines.push('');
     }
 
+    if (decisionEvidence?.supportingSources && decisionEvidence.supportingSources.length > 0) {
+      lines.push('## Supporting Sources');
+      lines.push('');
+      for (const source of decisionEvidence.supportingSources) {
+        lines.push(`- ${source}`);
+      }
+      lines.push('');
+    }
+
     // Metadata
     lines.push('## Metadata');
     lines.push(`- **Archived**: ${created}`);
@@ -171,6 +187,10 @@ export class DecisionArchiver {
 
     if (supportingPages?.length) {
       lines.push(`- **Supporting Pages**: ${supportingPages.length}`);
+    }
+
+    if (decisionEvidence?.supportingSources?.length) {
+      lines.push(`- **Supporting Sources**: ${decisionEvidence.supportingSources.length}`);
     }
 
     lines.push('');

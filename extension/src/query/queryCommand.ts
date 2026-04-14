@@ -7,18 +7,32 @@ import { Logger } from '../utils/logger';
 import { ErrorHandler } from '../utils/error-handler';
 import { SearchEngine } from '../search/search-engine';
 import { WikiManager } from '../wiki/wiki-manager';
+import {
+  ConflictItem,
+  CoverageGap,
+  EvidenceBundle,
+  PreviousWikiTurn,
+  QueryCoverageAssessment,
+  StructuredAnswer,
+  SupportingFact,
+} from '../models/types';
+import { formatStructuredAnswer } from './answerFormatter';
 
 export interface QueryOptions {
   maxResults?: number;
   useLocalEmbeddings?: boolean;
+  previousTurn?: PreviousWikiTurn;
 }
 
 export interface QueryResult {
   query: string;
+  effectiveQuery: string;
   results: SearchResultDetail[];
   sources: string[];
   usedFallback: boolean;
   executionTime: number;
+  evidenceBundle: EvidenceBundle;
+  answer: StructuredAnswer;
 }
 
 export interface SearchResultDetail {
@@ -28,6 +42,8 @@ export interface SearchResultDetail {
   relevanceScore: number;
   matchType: 'title' | 'content' | 'semantic';
   sourceFile?: string;
+  sourceReferences: string[];
+  plaintext: string;
 }
 
 export class QueryHandler {
@@ -50,6 +66,7 @@ export class QueryHandler {
     const startTime = Date.now();
     const maxResults = options.maxResults || 5;
     let usedFallback = false;
+    const effectiveQuery = userQuery;
 
     try {
       this.logger.info(`Executing query: "${userQuery}"`);
@@ -59,12 +76,16 @@ export class QueryHandler {
 
       if (primaryResults.length > 0) {
         this.logger.info(`Found ${primaryResults.length} results via primary search`);
+        const evidenceBundle = this.buildEvidenceBundle(userQuery, primaryResults);
         return {
           query: userQuery,
+          effectiveQuery,
           results: primaryResults,
           sources: this.extractSources(primaryResults),
           usedFallback: false,
           executionTime: Date.now() - startTime,
+          evidenceBundle,
+          answer: this.buildStructuredAnswer(userQuery, evidenceBundle),
         };
       }
 
@@ -76,12 +97,16 @@ export class QueryHandler {
         if (fallbackResults.length > 0) {
           usedFallback = true;
           this.logger.info(`Found ${fallbackResults.length} results via fallback search`);
+          const evidenceBundle = this.buildEvidenceBundle(userQuery, fallbackResults);
           return {
             query: userQuery,
+            effectiveQuery,
             results: fallbackResults,
             sources: this.extractSources(fallbackResults),
             usedFallback: true,
             executionTime: Date.now() - startTime,
+            evidenceBundle,
+            answer: this.buildStructuredAnswer(userQuery, evidenceBundle),
           };
         }
       }
@@ -89,24 +114,33 @@ export class QueryHandler {
       // Step 3: Basic keyword search fallback
       this.logger.info('Using basic keyword search fallback');
       const keywordResults = await this.searchKeywords(userQuery, maxResults);
+      const evidenceBundle = this.buildEvidenceBundle(userQuery, keywordResults);
 
       return {
         query: userQuery,
+        effectiveQuery,
         results: keywordResults,
         sources: this.extractSources(keywordResults),
         usedFallback: keywordResults.length > 0 && primaryResults.length === 0,
         executionTime: Date.now() - startTime,
+        evidenceBundle,
+        answer: this.buildStructuredAnswer(userQuery, evidenceBundle),
       };
     } catch (error) {
       this.logger.error(`Query execution failed: ${String(error)}`);
 
+      const evidenceBundle = this.createInsufficientEvidenceBundle(userQuery);
+
       // Ultimate fallback: return empty results gracefully
       return {
         query: userQuery,
+        effectiveQuery,
         results: [],
         sources: [],
         usedFallback: true,
         executionTime: Date.now() - startTime,
+        evidenceBundle,
+        answer: this.buildStructuredAnswer(userQuery, evidenceBundle),
       };
     }
   }
@@ -117,15 +151,6 @@ export class QueryHandler {
    */
   private async searchPrimary(query: string, maxResults: number): Promise<SearchResultDetail[]> {
     try {
-      // Check if Copilot API is available
-      const hasCopilotAPI = process.env.GITHUB_COPILOT_API_KEY && process.env.GITHUB_COPILOT_API_KEY.length > 0;
-
-      if (!hasCopilotAPI) {
-        this.logger.debug('Copilot API not configured, skipping primary search');
-        return [];
-      }
-
-      // Use semantic search engine (assumes it has Copilot integration)
       const semanticResults = await this.searchEngine.search(query, maxResults);
 
       return semanticResults.map((result) => ({
@@ -135,6 +160,8 @@ export class QueryHandler {
         relevanceScore: result.score,
         matchType: result.matchType as 'title' | 'content' | 'semantic',
         sourceFile: result.page.sourceUri,
+        sourceReferences: result.page.sourceReferences || [],
+        plaintext: result.page.plaintext,
       }));
     } catch (error) {
       this.logger.warn(`Primary search failed: ${String(error)}`);
@@ -168,22 +195,35 @@ export class QueryHandler {
       const terms = query
         .toLowerCase()
         .split(/\s+/)
-        .filter((t) => t.length > 2);
+        .filter((t) => t.length > 1);
 
       if (terms.length === 0) {
+        this.logger.warn('No searchable terms found');
         return [];
       }
 
       // Search all wiki pages
       const pages = await this.wikiManager.listPages();
+      
+      if (!pages || pages.length === 0) {
+        this.logger.warn('No wiki pages available for search');
+        return [];
+      }
+      
       const scored: Array<SearchResultDetail & { score: number }> = [];
 
       for (const page of pages) {
+        if (!page || !page.id || !page.title) {
+          this.logger.debug('Skipping invalid page');
+          continue;
+        }
+
         let score = 0;
 
         // Title matches score highest
+        const pageTitle = page.title.toLowerCase();
         for (const term of terms) {
-          if (page.title.toLowerCase().includes(term)) {
+          if (pageTitle.includes(term)) {
             score += 3;
           }
         }
@@ -196,22 +236,28 @@ export class QueryHandler {
         }
 
         if (score > 0) {
+          const excerpt = plaintext.slice(0, 200) || "(No preview available)";
           scored.push({
             pageId: page.id,
             title: page.title,
-            excerpt: plaintext.slice(0, 200),
+            excerpt,
             relevanceScore: Math.min(score / 10, 1), // Normalize to 0-1
             matchType: 'title',
+            sourceReferences: page.sourceReferences || [],
+            plaintext: page.plaintext,
             score,
           });
         }
       }
 
       // Sort by score and return top results
-      return scored
+      const results = scored
         .sort((a, b) => b.score - a.score)
         .slice(0, maxResults)
         .map(({ score, ...result }) => result);
+      
+      this.logger.info(`Keyword search found ${results.length} results`);
+      return results;
     } catch (error) {
       this.logger.error(`Keyword search failed: ${String(error)}`);
       return [];
@@ -225,7 +271,11 @@ export class QueryHandler {
     const sources = new Set<string>();
 
     for (const result of results) {
-      if (result.sourceFile) {
+      for (const sourceReference of result.sourceReferences) {
+        sources.add(sourceReference);
+      }
+
+      if (sources.size === 0 && result.sourceFile) {
         sources.add(result.sourceFile);
       }
     }
@@ -233,29 +283,275 @@ export class QueryHandler {
     return Array.from(sources);
   }
 
+  private buildEvidenceBundle(query: string, results: SearchResultDetail[]): EvidenceBundle {
+    if (results.length === 0) {
+      return this.createInsufficientEvidenceBundle(query);
+    }
+
+    const supportingFacts = this.extractSupportingFacts(query, results);
+    const conflicts = this.detectConflicts(query, supportingFacts);
+    const sourceReferences = Array.from(
+      new Set(results.flatMap((result) => result.sourceReferences))
+    );
+
+    const coverageAssessment = this.assessCoverage(query, supportingFacts, conflicts, results);
+    const coverageGaps = this.buildCoverageGaps(query, coverageAssessment, supportingFacts);
+
+    return {
+      supportingPages: results.slice(0, 5).map((result) => ({
+        pageId: result.pageId,
+        title: result.title,
+        sourceReferences: result.sourceReferences,
+      })),
+      supportingFacts,
+      sourceReferences,
+      coverageAssessment,
+      conflicts,
+      coverageGaps,
+    };
+  }
+
+  private createInsufficientEvidenceBundle(query: string): EvidenceBundle {
+    return {
+      supportingPages: [],
+      supportingFacts: [],
+      sourceReferences: [],
+      coverageAssessment: 'insufficient',
+      conflicts: [],
+      coverageGaps: [
+        {
+          missingTopic: query,
+          reason: 'The available wiki material does not provide enough grounded evidence to answer this query.',
+          suggestedFollowUp: `Try a narrower query related to "${query}" or ingest more supporting source material.`,
+        },
+      ],
+    };
+  }
+
+  private extractSupportingFacts(query: string, results: SearchResultDetail[]): SupportingFact[] {
+    const queryTerms = this.extractQueryTerms(query);
+    const facts: SupportingFact[] = [];
+    const seenStatements = new Set<string>();
+
+    for (const result of results.slice(0, 5)) {
+      const candidateSentences = this.extractSentences(result.plaintext)
+        .filter((sentence) => this.isRelevantSentence(sentence, queryTerms))
+        .slice(0, 3);
+
+      for (const sentence of candidateSentences) {
+        const normalizedSentence = sentence.toLowerCase();
+        if (seenStatements.has(normalizedSentence)) {
+          continue;
+        }
+
+        seenStatements.add(normalizedSentence);
+        facts.push({
+          pageId: result.pageId,
+          title: result.title,
+          statement: sentence,
+          sourceReferences: result.sourceReferences,
+        });
+      }
+    }
+
+    if (facts.length === 0 && results[0]) {
+      facts.push({
+        pageId: results[0].pageId,
+        title: results[0].title,
+        statement: results[0].excerpt,
+        sourceReferences: results[0].sourceReferences,
+      });
+    }
+
+    return facts.slice(0, 6);
+  }
+
+  private detectConflicts(query: string, facts: SupportingFact[]): ConflictItem[] {
+    const conflicts: ConflictItem[] = [];
+    const queryTerms = this.extractQueryTerms(query);
+
+    for (let leftIndex = 0; leftIndex < facts.length; leftIndex++) {
+      for (let rightIndex = leftIndex + 1; rightIndex < facts.length; rightIndex++) {
+        const left = facts[leftIndex];
+        const right = facts[rightIndex];
+
+        const leftPolarity = this.getSentencePolarity(left.statement);
+        const rightPolarity = this.getSentencePolarity(right.statement);
+        const overlap = this.getTermOverlap(left.statement, right.statement, queryTerms);
+
+        if (leftPolarity !== 'neutral' && rightPolarity !== 'neutral' && leftPolarity !== rightPolarity && overlap >= 2) {
+          conflicts.push({
+            topic: query,
+            summary: `${left.title} and ${right.title} provide conflicting guidance about ${query}.`,
+            supportingPages: [left.title, right.title],
+            supportingSources: Array.from(new Set([...left.sourceReferences, ...right.sourceReferences])),
+          });
+        }
+      }
+    }
+
+    return conflicts.slice(0, 3);
+  }
+
+  private assessCoverage(
+    query: string,
+    facts: SupportingFact[],
+    conflicts: ConflictItem[],
+    results: SearchResultDetail[]
+  ): QueryCoverageAssessment {
+    if (results.length === 0 || facts.length === 0) {
+      return 'insufficient';
+    }
+
+    if (conflicts.length > 0) {
+      return 'conflicted';
+    }
+
+    const queryTerms = this.extractQueryTerms(query);
+    const factTerms = new Set(facts.flatMap((fact) => this.extractQueryTerms(fact.statement)));
+    const coveredTerms = queryTerms.filter((term) => factTerms.has(term)).length;
+    const coverageRatio = queryTerms.length === 0 ? 0 : coveredTerms / queryTerms.length;
+
+    if (coverageRatio >= 0.7 || results.length >= 2) {
+      return 'complete';
+    }
+
+    return 'partial';
+  }
+
+  private buildCoverageGaps(
+    query: string,
+    coverageAssessment: QueryCoverageAssessment,
+    facts: SupportingFact[]
+  ): CoverageGap[] {
+    if (coverageAssessment === 'complete') {
+      return [];
+    }
+
+    if (coverageAssessment === 'conflicted') {
+      return [
+        {
+          missingTopic: query,
+          reason: 'The available evidence conflicts, so the answer includes the most defensible position but cannot fully resolve the disagreement.',
+          suggestedFollowUp: `Review the cited sources for "${query}" to determine which guidance should be treated as authoritative.`,
+        },
+      ];
+    }
+
+    if (facts.length === 0) {
+      return [
+        {
+          missingTopic: query,
+          reason: 'No sufficiently relevant grounded evidence was found in the wiki.',
+          suggestedFollowUp: `Try a narrower query related to "${query}" or ingest additional supporting material.`,
+        },
+      ];
+    }
+
+    return [
+      {
+        missingTopic: query,
+        reason: 'Only part of the question is supported by the currently retrieved evidence.',
+        suggestedFollowUp: `Ask a narrower follow-up about one aspect of "${query}" for a more precise grounded answer.`,
+      },
+    ];
+  }
+
+  private buildStructuredAnswer(query: string, evidenceBundle: EvidenceBundle): StructuredAnswer {
+    const supportingReferences = [
+      ...evidenceBundle.supportingPages.map((page) => `Wiki: ${page.title}`),
+      ...evidenceBundle.sourceReferences.map((source) => `Source: ${source}`),
+    ];
+
+    if (evidenceBundle.coverageAssessment === 'insufficient') {
+      return {
+        directAnswer: 'The available wiki material does not contain enough grounded information to answer this question completely.',
+        keyDetails: [],
+        supportingReferences,
+        conflicts: [],
+        coverageGaps: evidenceBundle.coverageGaps.map((gap) => `${gap.reason} ${gap.suggestedFollowUp}`),
+        confidenceLabel: 'insufficient-support',
+      };
+    }
+
+    const directAnswerFacts = evidenceBundle.supportingFacts.slice(0, 2).map((fact) => fact.statement);
+    const directAnswer = directAnswerFacts.join(' ');
+    const keyDetails = evidenceBundle.supportingFacts.slice(2, 6).map((fact) => fact.statement);
+
+    return {
+      directAnswer: directAnswer || 'The wiki contains relevant evidence, but the answer should be treated as only partially supported.',
+      keyDetails,
+      supportingReferences: Array.from(new Set(supportingReferences)),
+      conflicts: evidenceBundle.conflicts.map((conflict) => `${conflict.summary} Sources: ${conflict.supportingSources.join(', ')}`),
+      coverageGaps: evidenceBundle.coverageGaps.map((gap) => `${gap.reason} ${gap.suggestedFollowUp}`),
+      confidenceLabel: evidenceBundle.coverageAssessment === 'complete' ? 'supported' : 'partially-supported',
+    };
+  }
+
+  private extractQueryTerms(text: string): string[] {
+    return text
+      .toLowerCase()
+      .split(/\s+/)
+      .map((term) => term.replace(/[^a-z0-9]/g, ''))
+      .filter((term) => term.length > 2);
+  }
+
+  private extractSentences(text: string): string[] {
+    return text
+      .split(/(?<=[.!?])\s+/)
+      .map((sentence) => sentence.trim())
+      .filter((sentence) => sentence.length > 20)
+      .slice(0, 20);
+  }
+
+  private isRelevantSentence(sentence: string, queryTerms: string[]): boolean {
+    const normalizedSentence = sentence.toLowerCase();
+    return queryTerms.some((term) => normalizedSentence.includes(term));
+  }
+
+  private getSentencePolarity(sentence: string): 'positive' | 'negative' | 'neutral' {
+    const normalized = sentence.toLowerCase();
+    const negativePatterns = ['must not', 'cannot', 'can not', 'should not', 'is not', 'are not', 'never', 'without', 'forbidden', 'disallowed'];
+    const positivePatterns = ['must', 'can', 'should', 'is', 'are', 'required', 'allowed', 'include', 'includes'];
+
+    if (negativePatterns.some((pattern) => normalized.includes(pattern))) {
+      return 'negative';
+    }
+
+    if (positivePatterns.some((pattern) => normalized.includes(pattern))) {
+      return 'positive';
+    }
+
+    return 'neutral';
+  }
+
+  private getTermOverlap(left: string, right: string, queryTerms: string[]): number {
+    const leftTerms = new Set(this.extractQueryTerms(left));
+    const rightTerms = new Set(this.extractQueryTerms(right));
+
+    return queryTerms.filter((term) => leftTerms.has(term) && rightTerms.has(term)).length;
+  }
+
+  withDirectAnswer(queryResult: QueryResult, directAnswer: string): QueryResult {
+    return {
+      ...queryResult,
+      answer: {
+        ...queryResult.answer,
+        directAnswer,
+      },
+    };
+  }
+
   /**
    * Format query results for context injection to Copilot Chat
    */
   formatContextMessage(queryResult: QueryResult): string {
-    const lines: string[] = [];
-
-    if (queryResult.results.length === 0) {
-      return 'No wiki pages found matching your query.';
-    }
-
-    lines.push(`Found ${queryResult.results.length} relevant wiki pages:\n`);
-
-    for (const result of queryResult.results) {
-      lines.push(`**${result.title}**`);
-      lines.push(`- Relevance: ${(result.relevanceScore * 100).toFixed(0)}%`);
-      lines.push(`- Excerpt: ${result.excerpt.slice(0, 100)}...`);
-      lines.push('');
-    }
+    const formattedAnswer = formatStructuredAnswer(queryResult.answer);
 
     if (queryResult.usedFallback) {
-      lines.push('*Note: Search results generated using fallback method.*');
+      return `${formattedAnswer}\n\n*Note: Grounding used fallback retrieval.*`;
     }
 
-    return lines.join('\n');
+    return formattedAnswer;
   }
 }

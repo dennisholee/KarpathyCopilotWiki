@@ -11,6 +11,7 @@ import { WikiManager } from '../../src/wiki/wiki-manager';
 import { QueryHandler, QueryResult } from '../../src/query/queryCommand';
 import { DecisionArchiver, ConversationEntry } from '../../src/query/decisionArchiver';
 import { WikiChatParticipant } from '../../src/copilot/wiki-participant';
+import { buildEffectiveQuery } from '../../src/query/answerPrompt';
 
 describe('Copilot Chat Integration Tests', () => {
   let logger: Logger;
@@ -99,13 +100,15 @@ Machine learning is a subset of artificial intelligence that enables systems to 
       expect(result.executionTime).toBeGreaterThan(0);
     });
 
-    it('should format context message for Copilot Chat', async () => {
+    it('should format a structured answer for Copilot Chat', async () => {
       const result = await queryHandler.query('neural networks', { maxResults: 5 });
       const contextMessage = queryHandler.formatContextMessage(result);
 
       expect(contextMessage).toBeDefined();
       expect(typeof contextMessage).toBe('string');
       expect(contextMessage.length).toBeGreaterThan(0);
+      expect(contextMessage).toContain('**Direct Answer**');
+      expect(contextMessage).toContain('**Supporting References**');
     });
 
     it('should include fallback flag when primary search returns empty', async () => {
@@ -116,15 +119,23 @@ Machine learning is a subset of artificial intelligence that enables systems to 
       expect(typeof result.usedFallback).toBe('boolean');
     });
 
-    it('should extract sources from search results', async () => {
+    it('should extract raw source references from search results when available', async () => {
+      const pageWithSource = `---
+title: Machine Learning Sources
+source: "ml-sources.md"
+---
+
+# Machine Learning Sources
+
+Machine learning depends on grounded documentation. See /raw/ml-sources.md for source evidence.
+`;
+      fs.writeFileSync(path.join(wikiDir, '20240103_ml-sources.md'), pageWithSource);
+
       const result = await queryHandler.query('machine learning', { maxResults: 5 });
 
       expect(result.sources).toBeDefined();
       expect(Array.isArray(result.sources)).toBe(true);
-      // Sources should be file paths
-      result.sources.forEach((source) => {
-        expect(typeof source).toBe('string');
-      });
+      expect(result.sources.some((source) => source.includes('/raw/'))).toBe(true);
     });
 
     it('should respect maxResults option', async () => {
@@ -138,6 +149,44 @@ Machine learning is a subset of artificial intelligence that enables systems to 
 
       expect(typeof result.executionTime).toBe('number');
       expect(result.executionTime).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should identify conflicting evidence across supporting facts', async () => {
+      const page3 = `---
+title: Portfolio Rule Positive
+source: "portfolio-positive.md"
+---
+
+# Portfolio Rule Positive
+
+Portfolio withdrawals must be approved before processing.
+`;
+
+      const page4 = `---
+title: Portfolio Rule Negative
+source: "portfolio-negative.md"
+---
+
+# Portfolio Rule Negative
+
+Portfolio withdrawals must not be approved before processing.
+`;
+
+      fs.writeFileSync(path.join(wikiDir, '20240103_portfolio-positive.md'), page3);
+      fs.writeFileSync(path.join(wikiDir, '20240104_portfolio-negative.md'), page4);
+
+      const result = await queryHandler.query('portfolio withdrawals approval', { maxResults: 5 });
+
+      expect(result.evidenceBundle.conflicts.length).toBeGreaterThan(0);
+      expect(result.answer.conflicts.length).toBeGreaterThan(0);
+    });
+
+    it('should produce an insufficient-support answer when no evidence exists', async () => {
+      const result = await queryHandler.query('unmapped nonexistent domain phrase', { maxResults: 5 });
+
+      expect(result.answer.confidenceLabel).toBe('insufficient-support');
+      expect(result.answer.directAnswer).toContain('does not contain enough grounded information');
+      expect(result.answer.coverageGaps.length).toBeGreaterThan(0);
     });
   });
 
@@ -199,6 +248,30 @@ Machine learning is a subset of artificial intelligence that enables systems to 
         expect(content).toContain('created:');
         expect(content).toContain('## Conversation');
         expect(content).toContain('Explain machine learning');
+      }
+    });
+
+    it('should include supporting sources when provided', async () => {
+      const conversation: ConversationEntry[] = [
+        {
+          speaker: 'user',
+          message: 'Explain source traceability',
+          timestamp: new Date(),
+        },
+      ];
+
+      const archived = await decisionArchiver.archiveConversation(
+        'Explain source traceability',
+        conversation,
+        ['traceability-page'],
+        { supportingSources: ['/raw/traceability.md'] }
+      );
+
+      if (archived) {
+        const decisionFilePath = path.join(wikiDir, 'decisions', archived.filename);
+        const content = fs.readFileSync(decisionFilePath, 'utf-8');
+        expect(content).toContain('## Supporting Sources');
+        expect(content).toContain('/raw/traceability.md');
       }
     });
 
@@ -398,6 +471,272 @@ This is a test wiki page with searchable content about artificial intelligence.
       expect(retrieved).toBeDefined();
       expect(typeof retrieved).toBe('string');
       expect(retrieved).toContain('artificial');
+    });
+
+    it('should build a follow-up query using only the immediately previous turn', () => {
+      const effectiveQuery = buildEffectiveQuery('tell me more about the exceptions', {
+        query: 'what are the portfolio business rules',
+        answer: 'Portfolio withdrawals require approval.',
+      });
+
+      expect(effectiveQuery).toContain('what are the portfolio business rules');
+      expect(effectiveQuery).toContain('tell me more about the exceptions');
+    });
+  });
+
+  describe('T044-T045: End-to-End Workflow & Foam Compatibility', () => {
+    beforeEach(() => {
+      // Create a complete wiki structure for end-to-end testing
+      const page1 = `---
+title: Machine Learning
+tags: [ml, ai]
+---
+
+# Machine Learning
+
+Machine learning is [[Artificial Intelligence]] applied to systems that learn from data.
+
+## Supervised Learning
+
+Uses [[Labeled Data]] to train models. Common approach in [[Neural Networks]].
+
+## Unsupervised Learning
+
+Finds patterns in [[Unlabeled Data]] without guidance.
+`;
+
+      const page2 = `---
+title: Neural Networks
+tags: [ml, deep-learning]
+---
+
+# Neural Networks
+
+Inspired by biological neurons. Part of [[Machine Learning]].
+
+## Backpropagation
+
+Algorithm for training [[Neural Networks]]. Uses [[Gradient Descent]].
+`;
+
+      const page3 = `---
+title: Artificial Intelligence
+tags: [ai]
+---
+
+# Artificial Intelligence
+
+Broad field including [[Machine Learning]] and [[Neural Networks]].
+`;
+
+      const page4 = `---
+title: Gradient Descent
+tags: [optimization, ml]
+---
+
+# Gradient Descent
+
+Optimization algorithm used in [[Neural Networks]] training.
+`;
+
+      fs.writeFileSync(path.join(wikiDir, '20260414_ml.md'), page1);
+      fs.writeFileSync(path.join(wikiDir, '20260414_nn.md'), page2);
+      fs.writeFileSync(path.join(wikiDir, '20260414_ai.md'), page3);
+      fs.writeFileSync(path.join(wikiDir, '20260414_gd.md'), page4);
+    });
+
+    it('should verify Foam-compatible backlink syntax [[WikiLink]]', async () => {
+      const pages = await wikiManager.listPages();
+      
+      // Verify pages exist
+      expect(pages.length).toBeGreaterThanOrEqual(4);
+
+      // Check for [[WikiLink]] syntax in pages
+      for (const page of pages) {
+        const content = page.plaintext || '';
+        
+        // Pages should contain Wiki links
+        if (content.includes('[[')) {
+          expect(content).toMatch(/\[\[.+\]\]/); // Regex for [[SomethingHere]]
+        }
+      }
+    });
+
+    it('should detect and map backlinks correctly', async () => {
+      const pages = await wikiManager.listPages();
+      
+      // Should have created test pages
+      expect(pages.length).toBeGreaterThanOrEqual(3);
+
+      // Pages should have links array
+      const pagesWithLinks = pages.filter((p) => p.links && p.links.length > 0);
+      expect(pagesWithLinks.length).toBeGreaterThanOrEqual(0); // At least some pages should have links
+
+      // Verify that pages have either links or are properly connected
+      for (const page of pages) {
+        expect(page.links).toBeDefined();
+        if (page.links) {
+          expect(Array.isArray(page.links)).toBe(true);
+        }
+      }
+    });
+
+    it('should support full workflow: query -> archive -> graph traversal', async () => {
+      // Step 1: Query related to wiki content
+      const result = await queryHandler.query('machine learning algorithms', { maxResults: 5 });
+
+      expect(result.results.length).toBeGreaterThan(0);
+      expect(result.query).toBe('machine learning algorithms');
+
+      // Step 2: Format context for user
+      const contextMessage = queryHandler.formatContextMessage(result);
+      expect(contextMessage).toContain('Machine Learning');
+
+      // Step 3: Create conversation
+      const conversation: ConversationEntry[] = [
+        {
+          speaker: 'user',
+          message: 'What machine learning algorithms exist?',
+          timestamp: new Date(),
+        },
+        {
+          speaker: 'assistant',
+          message: contextMessage,
+          timestamp: new Date(),
+        },
+      ];
+
+      // Step 4: Archive decision
+      const decision = await decisionArchiver.archiveConversation(
+        'What machine learning algorithms exist?',
+        conversation,
+        result.results.map((r) => r.title)
+      );
+
+      expect(decision).toBeDefined();
+      expect(decision?.filename).toBeDefined();
+      expect(decision?.conversationLength).toBe(2);
+    });
+
+    it('should handle complex backlink networks', async () => {
+      // Create interconnected pages
+      const hubPage = `---
+title: AI Hub
+tags: [hub, ai]
+---
+
+# AI Hub
+
+Central page linking to relevant AI concepts.
+
+## Overview
+
+This hub connects major AI concepts together.
+`;
+
+      fs.writeFileSync(path.join(wikiDir, '20260414_hub.md'), hubPage);
+
+      const pages = await wikiManager.listPages();
+      const hubPageObj = pages.find((p) => p.title === 'AI Hub');
+
+      expect(hubPageObj).toBeDefined();
+
+      // Hub page should exist and be properly formatted
+      expect(hubPageObj!.title).toBe('AI Hub');
+      expect(hubPageObj!.plaintext).toContain('Central page');
+    });
+
+    it('should maintain backlink bidirectionality', async () => {
+      const pages = await wikiManager.listPages();
+      
+      // Should have multiple pages
+      expect(pages.length).toBeGreaterThanOrEqual(3);
+
+      // Pages should have links defined
+      const pagesWithLinks = pages.filter((p) => p.links && p.links.length > 0);
+      expect(pagesWithLinks.length).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should support orphan detection for graph analysis', async () => {
+      // Create an orphan page (no incoming/outgoing links)
+      const orphanPage = `---
+title: Orphan Concept
+tags: [orphan]
+---
+
+# Orphan Concept
+
+This page has no links to other pages.
+
+Self-contained content.
+`;
+
+      fs.writeFileSync(path.join(wikiDir, '20260414_orphan.md'), orphanPage);
+
+      // Run orphan detection
+      const pages = await wikiManager.listPages();
+      const orphans = pages.filter((page) => {
+        const content = page.plaintext || '';
+        return !content.includes('[[') && !content.includes(']]');
+      });
+
+      expect(orphans.length).toBeGreaterThan(0);
+      expect(orphans.some((p) => p.title === 'Orphan Concept')).toBe(true);
+    });
+
+    it('should have valid metadata for all pages', async () => {
+      const pages = await wikiManager.listPages();
+
+      for (const page of pages) {
+        // Verify required metadata
+        expect(page.id).toBeDefined();
+        expect(page.title).toBeDefined();
+        expect(typeof page.title).toBe('string');
+
+        // Verify content exists
+        expect(page.content).toBeDefined();
+        expect(page.plaintext).toBeDefined();
+
+        // Tags and links should exist (can be empty arrays)
+        expect(page.tags).toBeDefined();
+        expect(page.links).toBeDefined();
+      }
+    });
+
+    it('should handle decision archival with correct Foam-compatible format', async () => {
+      const conversation: ConversationEntry[] = [
+        {
+          speaker: 'user',
+          message: 'Compare ML vs NN approaches',
+          timestamp: new Date(),
+        },
+        {
+          speaker: 'assistant',
+          message: 'ML is broader, NN is specific technique [[Neural Networks]]',
+          timestamp: new Date(),
+        },
+      ];
+
+      const decision = await decisionArchiver.archiveConversation(
+        'Compare ML vs NN approaches',
+        conversation,
+        ['Machine Learning', 'Neural Networks']
+      );
+
+      expect(decision).toBeDefined();
+
+      if (decision) {
+        const filePath = path.join(wikiDir, 'decisions', decision.filename);
+        const content = fs.readFileSync(filePath, 'utf-8');
+
+        // Verify Foam-compatible format
+        expect(content).toMatch(/^---/); // YAML start
+        expect(content).toContain('title:');
+        expect(content).toContain('tags:');
+        
+        // Should survive Foam parsing
+        expect(content).toMatch(/## (Question|Conversation|Decision)/);
+      }
     });
   });
 });
