@@ -37,6 +37,60 @@ export interface WikiPage {
 
   /** Source file URI (for opening in editor) */
   sourceUri?: string;
+
+  /** References to raw source documents associated with this page */
+  sourceReferences?: string[];
+}
+
+export type QueryCoverageAssessment = 'complete' | 'partial' | 'insufficient' | 'conflicted';
+
+export type StructuredAnswerConfidence = 'supported' | 'partially-supported' | 'insufficient-support';
+
+export interface PreviousWikiTurn {
+  query: string;
+  answer: string;
+}
+
+export interface SupportingFact {
+  pageId: string;
+  title: string;
+  statement: string;
+  sourceReferences: string[];
+}
+
+export interface ConflictItem {
+  topic: string;
+  summary: string;
+  supportingPages: string[];
+  supportingSources: string[];
+}
+
+export interface CoverageGap {
+  missingTopic: string;
+  reason: string;
+  suggestedFollowUp: string;
+}
+
+export interface EvidenceBundle {
+  supportingPages: Array<{
+    pageId: string;
+    title: string;
+    sourceReferences: string[];
+  }>;
+  supportingFacts: SupportingFact[];
+  sourceReferences: string[];
+  coverageAssessment: QueryCoverageAssessment;
+  conflicts: ConflictItem[];
+  coverageGaps: CoverageGap[];
+}
+
+export interface StructuredAnswer {
+  directAnswer: string;
+  keyDetails: string[];
+  supportingReferences: string[];
+  conflicts: string[];
+  coverageGaps: string[];
+  confidenceLabel: StructuredAnswerConfidence;
 }
 
 export interface WikiIndex {

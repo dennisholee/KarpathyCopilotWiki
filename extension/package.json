@@ -37,7 +37,7 @@
     "commands": [
       {
         "command": "wiki.search",
-        "title": "Search Wiki",
+        "title": "Ask Wiki",
         "category": "Wiki"
       },
       {
@@ -61,12 +61,12 @@
         "id": "karpathy-wiki.wiki",
         "name": "wiki",
         "fullName": "Wiki",
-        "description": "Search and navigate your personal wiki",
+        "description": "Answer questions from your wiki with grounded references",
         "isSticky": false,
         "commands": [
           {
             "name": "search",
-            "description": "Full-text search across wiki pages"
+            "description": "Answer a wiki question using grounded page evidence"
           },
           {
             "name": "rebuild",
@@ -112,6 +112,11 @@
           "type": "boolean",
           "default": true,
           "description": "Enable semantic search using embeddings"
+        },
+        "wiki.enableRemoteAnswerSynthesis": {
+          "type": "boolean",
+          "default": false,
+          "description": "Explicitly allow remote chat-model synthesis for the Direct Answer section; grounded local evidence selection remains active and the extension will disclose when remote synthesis is used"
         },
         "wiki.enableDebugLogging": {
           "type": "boolean",

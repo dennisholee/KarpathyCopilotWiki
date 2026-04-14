@@ -4,6 +4,8 @@ import { SearchEngine } from '../search/search-engine';
 import { WikiManager } from '../wiki/wiki-manager';
 import { QueryHandler, QueryResult } from '../query/queryCommand';
 import { DecisionArchiver, ConversationEntry } from '../query/decisionArchiver';
+import { PreviousWikiTurn } from '../models/types';
+import { buildDirectAnswerPrompt, buildEffectiveQuery } from '../query/answerPrompt';
 
 export class WikiChatParticipant {
   private searchEngine: SearchEngine;
@@ -12,6 +14,7 @@ export class WikiChatParticipant {
   private queryHandler: QueryHandler;
   private decisionArchiver: DecisionArchiver;
   private conversationHistory: ConversationEntry[] = [];
+  private lastQueryResult: QueryResult | null = null;
 
   constructor(searchEngine: SearchEngine, wikiManager: WikiManager, logger: Logger) {
     this.searchEngine = searchEngine;
@@ -51,6 +54,8 @@ export class WikiChatParticipant {
 
       // Parse command and extract search query
       const { command, query } = this.parseCommand(request.prompt);
+      const previousTurn = this.getPreviousWikiTurn();
+      const effectiveQuery = buildEffectiveQuery(command === 'search' ? query : request.prompt, previousTurn);
 
       // Add user message to history
       this.conversationHistory.push({
@@ -78,19 +83,24 @@ export class WikiChatParticipant {
       }
       
       if (command === 'search') {
-        this.logger.info(`Executing search command with query: "${query}"`);
-        queryResult = await this.queryHandler.query(query, {
+        this.logger.info(`Executing search command with query: "${effectiveQuery}"`);
+        queryResult = await this.queryHandler.query(effectiveQuery, {
           maxResults: 5,
           useLocalEmbeddings: true,
+          previousTurn,
         });
       } else {
         // Default: treat entire prompt as query
-        this.logger.info(`Executing default query: "${request.prompt}"`);
-        queryResult = await this.queryHandler.query(request.prompt, {
+        this.logger.info(`Executing default query: "${effectiveQuery}"`);
+        queryResult = await this.queryHandler.query(effectiveQuery, {
           maxResults: 5,
           useLocalEmbeddings: true,
+          previousTurn,
         });
       }
+
+      queryResult = await this.applyRemoteSynthesisIfEnabled(request, queryResult, previousTurn, stream, token);
+      this.lastQueryResult = queryResult;
 
       // Stream response
       await this.streamResponse(queryResult, stream);
@@ -145,39 +155,12 @@ export class WikiChatParticipant {
    * Stream formatted response to chat
    */
   private async streamResponse(queryResult: QueryResult, stream: vscode.ChatResponseStream): Promise<void> {
-    if (!queryResult || !queryResult.results) {
+    if (!queryResult) {
       stream.markdown('Error: Invalid search results. Please try again.');
       return;
     }
 
-    if (queryResult.results.length === 0) {
-      stream.markdown(
-        '📭 No wiki pages found for your search.\n\n' +
-        'Try:\n' +
-        '- Using shorter keywords\n' +
-        '- Rephrasing your search\n' +
-        '- Checking if your wiki pages exist with `@wiki ingest`'
-      );
-      return;
-    }
-
-    stream.markdown(`🔍 Found ${queryResult.results.length} relevant wiki page${queryResult.results.length !== 1 ? 's' : ''}:\n\n`);
-
-    for (const result of queryResult.results) {
-      if (!result || !result.title) {
-        continue;
-      }
-      
-      const scorePercent = Math.round((result.relevanceScore || 0) * 100);
-      stream.markdown(`**${result.title}** (${scorePercent}% match)\n`);
-      
-      const excerpt = result.excerpt || "(No preview available)";
-      stream.markdown(`${excerpt.slice(0, 150)}...\n\n`);
-    }
-
-    if (queryResult.usedFallback) {
-      stream.markdown('*Note: Results generated using fallback search method.*\n\n');
-    }
+    stream.markdown(`${this.queryHandler.formatContextMessage(queryResult)}\n\n`);
 
     stream.markdown(
       '[📌 Archive this conversation]' +
@@ -206,13 +189,14 @@ export class WikiChatParticipant {
 
       const query = userMessages[0].message;
 
-      // Extract supporting page titles (mentioned in results)
-      const supportingPages: string[] = [];
+      const supportingPages = this.lastQueryResult?.evidenceBundle.supportingPages.map((page) => page.title) || [];
+      const supportingSources = this.lastQueryResult?.evidenceBundle.sourceReferences || [];
 
       const decision = await this.decisionArchiver.archiveConversation(
         query,
         this.conversationHistory,
-        supportingPages
+        supportingPages,
+        { supportingPages, supportingSources }
       );
 
       if (decision) {
@@ -243,6 +227,86 @@ export class WikiChatParticipant {
    */
   clearHistory(): void {
     this.conversationHistory = [];
+    this.lastQueryResult = null;
+  }
+
+  private getPreviousWikiTurn(): PreviousWikiTurn | undefined {
+    if (this.conversationHistory.length < 2) {
+      return undefined;
+    }
+
+    const previousAssistant = this.conversationHistory[this.conversationHistory.length - 1];
+    const previousUser = this.conversationHistory[this.conversationHistory.length - 2];
+
+    if (!previousAssistant || !previousUser || previousAssistant.speaker !== 'assistant' || previousUser.speaker !== 'user') {
+      return undefined;
+    }
+
+    return {
+      query: previousUser.message,
+      answer: previousAssistant.message,
+    };
+  }
+
+  private async applyRemoteSynthesisIfEnabled(
+    request: vscode.ChatRequest,
+    queryResult: QueryResult,
+    previousTurn: PreviousWikiTurn | undefined,
+    stream: vscode.ChatResponseStream,
+    token: vscode.CancellationToken
+  ): Promise<QueryResult> {
+    const configuration = vscode.workspace.getConfiguration('wiki');
+    const remoteSynthesisEnabled = configuration.get<boolean>('enableRemoteAnswerSynthesis', false);
+
+    if (!remoteSynthesisEnabled) {
+      return queryResult;
+    }
+
+    const requestWithModel = request as vscode.ChatRequest & {
+      model?: {
+        sendRequest: (messages: unknown[], options: Record<string, never>, token: vscode.CancellationToken) => Promise<{ text: AsyncIterable<string> }>;
+      };
+    };
+
+    if (!requestWithModel.model || queryResult.evidenceBundle.supportingFacts.length === 0) {
+      this.logger.info('Remote answer synthesis enabled but unavailable; using grounded local synthesis.');
+      return queryResult;
+    }
+
+    try {
+      const languageModelFactory = (vscode as unknown as {
+        LanguageModelChatMessage?: { User: (content: string) => unknown };
+      }).LanguageModelChatMessage;
+
+      if (!languageModelFactory) {
+        return queryResult;
+      }
+
+      this.logger.info('Remote answer synthesis enabled for this response.');
+      stream.markdown('*Remote answer synthesis enabled for this response.*\n\n');
+
+      const prompt = buildDirectAnswerPrompt(queryResult.query, queryResult.evidenceBundle, previousTurn);
+      const response = await requestWithModel.model.sendRequest(
+        [languageModelFactory.User(prompt)],
+        {},
+        token
+      );
+
+      let directAnswer = '';
+      for await (const fragment of response.text) {
+        directAnswer += String(fragment);
+      }
+
+      const trimmedDirectAnswer = directAnswer.trim();
+      if (!trimmedDirectAnswer) {
+        return queryResult;
+      }
+
+      return this.queryHandler.withDirectAnswer(queryResult, trimmedDirectAnswer);
+    } catch (error) {
+      this.logger.warn(`Remote answer synthesis failed, falling back to grounded local answer: ${String(error)}`);
+      return queryResult;
+    }
   }
 
 }

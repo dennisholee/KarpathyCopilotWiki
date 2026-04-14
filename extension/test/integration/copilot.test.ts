@@ -11,6 +11,7 @@ import { WikiManager } from '../../src/wiki/wiki-manager';
 import { QueryHandler, QueryResult } from '../../src/query/queryCommand';
 import { DecisionArchiver, ConversationEntry } from '../../src/query/decisionArchiver';
 import { WikiChatParticipant } from '../../src/copilot/wiki-participant';
+import { buildEffectiveQuery } from '../../src/query/answerPrompt';
 
 describe('Copilot Chat Integration Tests', () => {
   let logger: Logger;
@@ -99,13 +100,15 @@ Machine learning is a subset of artificial intelligence that enables systems to 
       expect(result.executionTime).toBeGreaterThan(0);
     });
 
-    it('should format context message for Copilot Chat', async () => {
+    it('should format a structured answer for Copilot Chat', async () => {
       const result = await queryHandler.query('neural networks', { maxResults: 5 });
       const contextMessage = queryHandler.formatContextMessage(result);
 
       expect(contextMessage).toBeDefined();
       expect(typeof contextMessage).toBe('string');
       expect(contextMessage.length).toBeGreaterThan(0);
+      expect(contextMessage).toContain('**Direct Answer**');
+      expect(contextMessage).toContain('**Supporting References**');
     });
 
     it('should include fallback flag when primary search returns empty', async () => {
@@ -116,15 +119,23 @@ Machine learning is a subset of artificial intelligence that enables systems to 
       expect(typeof result.usedFallback).toBe('boolean');
     });
 
-    it('should extract sources from search results', async () => {
+    it('should extract raw source references from search results when available', async () => {
+      const pageWithSource = `---
+title: Machine Learning Sources
+source: "ml-sources.md"
+---
+
+# Machine Learning Sources
+
+Machine learning depends on grounded documentation. See /raw/ml-sources.md for source evidence.
+`;
+      fs.writeFileSync(path.join(wikiDir, '20240103_ml-sources.md'), pageWithSource);
+
       const result = await queryHandler.query('machine learning', { maxResults: 5 });
 
       expect(result.sources).toBeDefined();
       expect(Array.isArray(result.sources)).toBe(true);
-      // Sources should be file paths
-      result.sources.forEach((source) => {
-        expect(typeof source).toBe('string');
-      });
+      expect(result.sources.some((source) => source.includes('/raw/'))).toBe(true);
     });
 
     it('should respect maxResults option', async () => {
@@ -138,6 +149,44 @@ Machine learning is a subset of artificial intelligence that enables systems to 
 
       expect(typeof result.executionTime).toBe('number');
       expect(result.executionTime).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should identify conflicting evidence across supporting facts', async () => {
+      const page3 = `---
+title: Portfolio Rule Positive
+source: "portfolio-positive.md"
+---
+
+# Portfolio Rule Positive
+
+Portfolio withdrawals must be approved before processing.
+`;
+
+      const page4 = `---
+title: Portfolio Rule Negative
+source: "portfolio-negative.md"
+---
+
+# Portfolio Rule Negative
+
+Portfolio withdrawals must not be approved before processing.
+`;
+
+      fs.writeFileSync(path.join(wikiDir, '20240103_portfolio-positive.md'), page3);
+      fs.writeFileSync(path.join(wikiDir, '20240104_portfolio-negative.md'), page4);
+
+      const result = await queryHandler.query('portfolio withdrawals approval', { maxResults: 5 });
+
+      expect(result.evidenceBundle.conflicts.length).toBeGreaterThan(0);
+      expect(result.answer.conflicts.length).toBeGreaterThan(0);
+    });
+
+    it('should produce an insufficient-support answer when no evidence exists', async () => {
+      const result = await queryHandler.query('unmapped nonexistent domain phrase', { maxResults: 5 });
+
+      expect(result.answer.confidenceLabel).toBe('insufficient-support');
+      expect(result.answer.directAnswer).toContain('does not contain enough grounded information');
+      expect(result.answer.coverageGaps.length).toBeGreaterThan(0);
     });
   });
 
@@ -199,6 +248,30 @@ Machine learning is a subset of artificial intelligence that enables systems to 
         expect(content).toContain('created:');
         expect(content).toContain('## Conversation');
         expect(content).toContain('Explain machine learning');
+      }
+    });
+
+    it('should include supporting sources when provided', async () => {
+      const conversation: ConversationEntry[] = [
+        {
+          speaker: 'user',
+          message: 'Explain source traceability',
+          timestamp: new Date(),
+        },
+      ];
+
+      const archived = await decisionArchiver.archiveConversation(
+        'Explain source traceability',
+        conversation,
+        ['traceability-page'],
+        { supportingSources: ['/raw/traceability.md'] }
+      );
+
+      if (archived) {
+        const decisionFilePath = path.join(wikiDir, 'decisions', archived.filename);
+        const content = fs.readFileSync(decisionFilePath, 'utf-8');
+        expect(content).toContain('## Supporting Sources');
+        expect(content).toContain('/raw/traceability.md');
       }
     });
 
@@ -398,6 +471,16 @@ This is a test wiki page with searchable content about artificial intelligence.
       expect(retrieved).toBeDefined();
       expect(typeof retrieved).toBe('string');
       expect(retrieved).toContain('artificial');
+    });
+
+    it('should build a follow-up query using only the immediately previous turn', () => {
+      const effectiveQuery = buildEffectiveQuery('tell me more about the exceptions', {
+        query: 'what are the portfolio business rules',
+        answer: 'Portfolio withdrawals require approval.',
+      });
+
+      expect(effectiveQuery).toContain('what are the portfolio business rules');
+      expect(effectiveQuery).toContain('tell me more about the exceptions');
     });
   });
 
