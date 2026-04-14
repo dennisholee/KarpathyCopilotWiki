@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.4: Data Lineage & W3C PROV Provenance Modeling"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.507Z
-source: "PHASE_1_4_DATA_LINEAGE_PROVENANCE.md"
+modified: 2026-04-14T15:42:00.493Z
 ---
 
 # Phase 1.4: Data Lineage & W3C PROV Provenance Modeling

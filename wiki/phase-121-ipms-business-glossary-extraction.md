@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.2.1: IPMS Business Glossary Extraction"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.437Z
-source: "PHASE_1_2_1_BUSINESS_GLOSSARY.md"
+modified: 2026-04-14T15:42:00.404Z
 ---
 
 # Phase 1.2.1: IPMS Business Glossary Extraction

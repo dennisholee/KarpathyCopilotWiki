@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.2.2: IPMS Semantic Ontology (OWL-DL)"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.442Z
-source: "PHASE_1_2_2_SEMANTIC_ONTOLOGY.md"
+modified: 2026-04-14T15:42:00.408Z
 ---
 
 # Phase 1.2.2: IPMS Semantic Ontology (OWL-DL)

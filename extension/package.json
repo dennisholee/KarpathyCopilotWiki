@@ -65,12 +65,20 @@
         "isSticky": false,
         "commands": [
           {
-            "name": "search",
+            "name": "query",
             "description": "Answer a wiki question using grounded page evidence"
           },
           {
+            "name": "search",
+            "description": "Search and answer questions using grounded wiki references"
+          },
+          {
             "name": "rebuild",
-            "description": "Rebuild wiki index"
+            "description": "Rebuild wiki index from current wiki pages"
+          },
+          {
+            "name": "ingest",
+            "description": "Ingest raw documents into the wiki"
           }
         ]
       }

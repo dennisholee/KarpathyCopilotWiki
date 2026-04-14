@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.5: DQ Rules Registry (50+ Executable Specifications)"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.523Z
-source: "PHASE_1_5_DQ_RULES_REGISTRY.md"
+modified: 2026-04-14T15:42:00.538Z
 ---
 
 # Phase 1.5: DQ Rules Registry (50+ Executable Specifications)

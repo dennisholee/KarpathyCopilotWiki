@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.6: Semantic Data Governance Capstone"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.561Z
-source: "PHASE_1_6_SEMANTIC_GOVERNANCE_CAPSTONE.md"
+modified: 2026-04-14T15:42:00.604Z
 ---
 
 # Phase 1.6: Semantic Data Governance Capstone

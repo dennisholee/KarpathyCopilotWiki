@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.3: Constraint Formalization - QUICK REFERENCE GUIDE"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.500Z
-source: "PHASE_1_3_QUICK_REFERENCE.md"
+modified: 2026-04-14T15:42:00.480Z
 ---
 
 # Phase 1.3: Constraint Formalization - QUICK REFERENCE GUIDE

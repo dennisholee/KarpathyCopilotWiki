@@ -258,6 +258,13 @@ export class WikiManager {
   }
 
   /**
+   * Get the raw directory path
+   */
+  getRawDir(): string {
+    return this.rawDir;
+  }
+
+  /**
    * Create a new wiki page
    */
   async createPage(

@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.5 Complete Deliverables Index"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.514Z
-source: "PHASE_1_5_COMPLETE_DELIVERABLES_INDEX.md"
+modified: 2026-04-14T15:42:00.514Z
 ---
 
 # Phase 1.5 Complete Deliverables Index

@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.5: Quick Reference & Navigation Guide"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.526Z
-source: "PHASE_1_5_QUICK_REFERENCE.md"
+modified: 2026-04-14T15:42:00.543Z
 ---
 
 # Phase 1.5: Quick Reference & Navigation Guide

@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.3: Business Rules & Constraints Formalization"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.495Z
-source: "PHASE_1_3_CONSTRAINT_FORMALIZATION.md"
+modified: 2026-04-14T15:42:00.470Z
 ---
 
 # Phase 1.3: Business Rules & Constraints Formalization

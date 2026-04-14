@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.2.4: Semantic Model Designer Report"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.484Z
-source: "PHASE_1_2_4_SEMANTIC_MODEL_DESIGNER.md"
+modified: 2026-04-14T15:42:00.448Z
 ---
 
 # Phase 1.2.4: Semantic Model Designer Report

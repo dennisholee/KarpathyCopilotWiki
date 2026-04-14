@@ -1,9 +1,6 @@
 ---
 title: "Phase 1.1: COBOL Analysis Report"
-tags:
-  - ingested
-created: 2026-04-14T12:49:19.430Z
-source: "PHASE_1_1_COBOL_ANALYSIS_REPORT.md"
+modified: 2026-04-14T15:42:00.394Z
 ---
 
 # Phase 1.1: COBOL Analysis Report
