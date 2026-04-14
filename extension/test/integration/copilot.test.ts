@@ -245,8 +245,12 @@ Portfolio withdrawals must not be approved before processing.
         const content = fs.readFileSync(decisionFilePath, 'utf-8');
         expect(content).toContain('---'); // YAML frontmatter start
         expect(content).toContain('title:');
+        expect(content).toContain('summary:');
+        expect(content).toContain('tags:');
         expect(content).toContain('created:');
-        expect(content).toContain('## Conversation');
+        expect(content).toContain('## Links');
+        expect(content).toContain('## Content');
+        expect(content).toContain('### Conversation');
         expect(content).toContain('Explain machine learning');
       }
     });
@@ -270,7 +274,8 @@ Portfolio withdrawals must not be approved before processing.
       if (archived) {
         const decisionFilePath = path.join(wikiDir, 'decisions', archived.filename);
         const content = fs.readFileSync(decisionFilePath, 'utf-8');
-        expect(content).toContain('## Supporting Sources');
+        expect(content).toContain('## Links');
+        expect(content).toContain('Supporting raw sources: /raw/traceability.md');
         expect(content).toContain('/raw/traceability.md');
       }
     });
@@ -406,6 +411,7 @@ Portfolio withdrawals must not be approved before processing.
 title: Test Wiki Page
 tags:
   - test
+source: "test-source.md"
 ---
 
 # Test Content
@@ -471,6 +477,33 @@ This is a test wiki page with searchable content about artificial intelligence.
       expect(retrieved).toBeDefined();
       expect(typeof retrieved).toBe('string');
       expect(retrieved).toContain('artificial');
+    });
+
+    it('should automatically archive each handled query as a decision page', async () => {
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'artificial intelligence' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const decisionsDir = path.join(wikiDir, 'decisions');
+      const decisionFiles = fs.readdirSync(decisionsDir).filter((file) => file.endsWith('.md'));
+
+      expect(decisionFiles.length).toBe(1);
+
+      const content = fs.readFileSync(path.join(decisionsDir, decisionFiles[0]), 'utf-8');
+      expect(content).toContain('## Summary');
+      expect(content).toContain('## Links');
+      expect(content).toContain('## Content');
+      expect(content).toContain('[[Test Wiki Page]]');
+      expect(content).toContain('/raw/test-source.md');
+      expect(stream.markdown).toHaveBeenCalled();
     });
 
     it('should build a follow-up query using only the immediately previous turn', () => {

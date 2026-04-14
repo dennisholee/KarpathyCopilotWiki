@@ -126,33 +126,69 @@ export class DecisionArchiver {
   ): string {
     const date = timestamp || new Date();
     const created = date.toISOString();
+    const pageTitle = `Decision - ${this.extractPageTitle(query)}`;
+    const summary = `Archived decision for query: ${this.extractPageTitle(query)}`;
+    const tags = ['decision', 'copilot-chat', 'archived'];
+    const combinedLinks = Array.from(
+      new Set([...(supportingPages || []).map((page) => `[[${page}]]`), ...(decisionEvidence?.supportingSources || [])])
+    );
 
     const lines: string[] = [];
 
     // YAML frontmatter
     lines.push('---');
-    lines.push(`title: Decision - ${this.extractPageTitle(query)}`);
+    lines.push(`title: ${this.quoteYaml(pageTitle)}`);
+    lines.push(`summary: ${this.quoteYaml(summary)}`);
     lines.push(`created: ${created}`);
     lines.push(`modified: ${created}`);
-
-    // Tags
-    const tags = ['decision', 'copilot-chat', 'archived'];
     lines.push(`tags: [${tags.map((t) => `"${t}"`).join(', ')}]`);
+
+    if (combinedLinks.length > 0) {
+      lines.push('links:');
+      for (const link of combinedLinks) {
+        lines.push(`  - ${this.quoteYaml(link)}`);
+      }
+    }
 
     lines.push('---');
     lines.push('');
 
     // Main heading
-    lines.push('# Decision');
+    lines.push(`# ${pageTitle}`);
+    lines.push('');
+
+    lines.push('## Summary');
+    lines.push(summary);
+    lines.push('');
+
+    lines.push('## Tags');
+    for (const tag of tags) {
+      lines.push(`- ${tag}`);
+    }
+    lines.push('');
+
+    lines.push('## Links');
+    lines.push('');
+
+    if (combinedLinks.length > 0) {
+      for (const link of combinedLinks) {
+        lines.push(`- ${link}`);
+      }
+    } else {
+      lines.push('- (No supporting links recorded)');
+    }
+
+    lines.push('');
+    lines.push('## Content');
     lines.push('');
 
     // Original question
-    lines.push('## Question');
+    lines.push('### Question');
     lines.push(query);
     lines.push('');
 
     // Conversation transcript
-    lines.push('## Conversation');
+    lines.push('### Conversation');
     lines.push('');
 
     for (const entry of conversation) {
@@ -161,24 +197,19 @@ export class DecisionArchiver {
       lines.push('');
     }
 
-    // Supporting wiki pages
-    if (supportingPages && supportingPages.length > 0) {
-      lines.push('## Supporting Pages');
-      lines.push('');
-      for (const page of supportingPages) {
-        lines.push(`- [[${page}]]`);
-      }
-      lines.push('');
+    lines.push('### Rationale');
+    lines.push('');
+    lines.push('- Answer archived from the grounded wiki query flow.');
+
+    if (supportingPages?.length) {
+      lines.push(`- Supporting wiki pages: ${supportingPages.join(', ')}`);
     }
 
-    if (decisionEvidence?.supportingSources && decisionEvidence.supportingSources.length > 0) {
-      lines.push('## Supporting Sources');
-      lines.push('');
-      for (const source of decisionEvidence.supportingSources) {
-        lines.push(`- ${source}`);
-      }
-      lines.push('');
+    if (decisionEvidence?.supportingSources?.length) {
+      lines.push(`- Supporting raw sources: ${decisionEvidence.supportingSources.join(', ')}`);
     }
+
+    lines.push('');
 
     // Metadata
     lines.push('## Metadata');
@@ -196,6 +227,10 @@ export class DecisionArchiver {
     lines.push('');
 
     return lines.join('\n');
+  }
+
+  private quoteYaml(value: string): string {
+    return `"${value.replace(/"/g, '\\"')}"`;
   }
 
   /**

@@ -5,7 +5,7 @@ import { Logger } from '../utils/logger';
 import { SearchEngine } from '../search/search-engine';
 import { WikiManager } from '../wiki/wiki-manager';
 import { QueryHandler, QueryResult } from '../query/queryCommand';
-import { DecisionArchiver, ConversationEntry } from '../query/decisionArchiver';
+import { ArchivedDecision, DecisionArchiver, ConversationEntry } from '../query/decisionArchiver';
 import { PreviousWikiTurn } from '../models/types';
 import { buildDirectAnswerPrompt, buildEffectiveQuery } from '../query/answerPrompt';
 import { IndexBuilder } from '../commands/indexRebuild';
@@ -127,7 +127,9 @@ export class WikiChatParticipant {
         previousTurn
       );
       
-      return await this.handleQuery(effectiveQuery, previousTurn, stream, request, token);
+      const displayQuery = (command === 'search' || command === 'query' ? query : request.prompt).trim();
+
+      return await this.handleQuery(displayQuery, effectiveQuery, previousTurn, stream, request, token);
     } catch (error) {
       this.logger.error(`Chat handler error: ${String(error)}`);
       stream.markdown('Error processing your request. Please try again.');
@@ -139,6 +141,7 @@ export class WikiChatParticipant {
    * Handle query/search request
    */
   private async handleQuery(
+    displayQuery: string,
     query: string,
     previousTurn: PreviousWikiTurn | undefined,
     stream: vscode.ChatResponseStream,
@@ -162,13 +165,16 @@ export class WikiChatParticipant {
     );
     this.lastQueryResult = synthesizedResult;
 
+    const answerMessage = this.queryHandler.formatContextMessage(synthesizedResult);
+    const archivedDecision = await this.archiveAnsweredQuery(displayQuery || query, answerMessage, synthesizedResult);
+
     // Stream response
-    await this.streamResponse(synthesizedResult, stream);
+    await this.streamResponse(synthesizedResult, stream, archivedDecision);
 
     // Add assistant response to history
     this.conversationHistory.push({
       speaker: 'assistant',
-      message: this.queryHandler.formatContextMessage(synthesizedResult),
+      message: answerMessage,
       timestamp: new Date(),
     });
 
@@ -457,7 +463,11 @@ export class WikiChatParticipant {
   /**
    * Stream formatted response to chat
    */
-  private async streamResponse(queryResult: QueryResult, stream: vscode.ChatResponseStream): Promise<void> {
+  private async streamResponse(
+    queryResult: QueryResult,
+    stream: vscode.ChatResponseStream,
+    archivedDecision?: ArchivedDecision | null
+  ): Promise<void> {
     if (!queryResult) {
       stream.markdown('Error: Invalid search results. Please try again.');
       return;
@@ -465,11 +475,35 @@ export class WikiChatParticipant {
 
     stream.markdown(`${this.queryHandler.formatContextMessage(queryResult)}\n\n`);
 
-    stream.markdown(
-      '[📌 Archive this conversation]' +
-        '(command:personal-wiki.archiveDecision?%7B%22query%22:%22' +
-        encodeURIComponent(queryResult.query) +
-        '%22%7D)\n'
+    if (archivedDecision) {
+      stream.markdown(`*Decision archived to /wiki/decisions/${archivedDecision.filename}.*\n`);
+    }
+  }
+
+  private async archiveAnsweredQuery(
+    query: string,
+    answerMessage: string,
+    queryResult: QueryResult
+  ): Promise<ArchivedDecision | null> {
+    const supportingPages = queryResult.evidenceBundle.supportingPages.map((page) => page.title);
+    const supportingSources = queryResult.evidenceBundle.sourceReferences;
+
+    return this.decisionArchiver.archiveConversation(
+      query,
+      [
+        {
+          speaker: 'user',
+          message: query,
+          timestamp: new Date(),
+        },
+        {
+          speaker: 'assistant',
+          message: answerMessage,
+          timestamp: new Date(),
+        },
+      ],
+      supportingPages,
+      { supportingPages, supportingSources }
     );
   }
 

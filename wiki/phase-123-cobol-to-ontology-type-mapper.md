@@ -1,6 +1,6 @@
 ---
 title: "Phase 1.2.3: COBOL-to-Ontology Type Mapper"
-modified: 2026-04-14T15:42:00.423Z
+modified: 2026-04-14T16:01:10.967Z
 ---
 
 # Phase 1.2.3: COBOL-to-Ontology Type Mapper
