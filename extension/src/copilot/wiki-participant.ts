@@ -49,6 +49,9 @@ export class WikiChatParticipant {
     try {
       this.logger.info(`Wiki Chat: Processing request - "${request.prompt}"`);
 
+      // Parse command and extract search query
+      const { command, query } = this.parseCommand(request.prompt);
+
       // Add user message to history
       this.conversationHistory.push({
         speaker: 'user',
@@ -56,11 +59,38 @@ export class WikiChatParticipant {
         timestamp: new Date(),
       });
 
-      // Execute query with fallback strategy
-      const queryResult = await this.queryHandler.query(request.prompt, {
-        maxResults: 5,
-        useLocalEmbeddings: true,
-      });
+      // Route to appropriate handler
+      let queryResult: QueryResult;
+      
+      if (command === 'search-help') {
+        // User typed "search" without a query - show help
+        this.logger.info('Displaying search help');
+        stream.markdown(
+          '**Wiki Search Help**\n\n' +
+          'Usage: `search [your query]` or `search for [your query]`\n\n' +
+          '**Examples:**\n' +
+          '- `search neural networks`\n' +
+          '- `search for machine learning basics`\n' +
+          '- `search transformers architecture`\n\n' +
+          'Or just ask a question directly and I\'ll search the wiki for relevant pages!'
+        );
+        return {};
+      }
+      
+      if (command === 'search') {
+        this.logger.info(`Executing search command with query: "${query}"`);
+        queryResult = await this.queryHandler.query(query, {
+          maxResults: 5,
+          useLocalEmbeddings: true,
+        });
+      } else {
+        // Default: treat entire prompt as query
+        this.logger.info(`Executing default query: "${request.prompt}"`);
+        queryResult = await this.queryHandler.query(request.prompt, {
+          maxResults: 5,
+          useLocalEmbeddings: true,
+        });
+      }
 
       // Stream response
       await this.streamResponse(queryResult, stream);
@@ -84,24 +114,69 @@ export class WikiChatParticipant {
   }
 
   /**
+   * Parse command from user input
+   * Supports: "search [query]", "search for [query]", or plain query
+   */
+  private parseCommand(prompt: string): { command: string; query: string } {
+    const trimmed = prompt.trim();
+    const lowerTrimmed = trimmed.toLowerCase();
+
+    // Match "search" or "search for" pattern
+    const searchMatch = lowerTrimmed.match(/^search\s+(?:for\s+)?(.*)$/i);
+    if (searchMatch) {
+      const query = searchMatch[1].trim();
+      // If query is empty, return a prompt for help
+      if (!query) {
+        return { command: 'search-help', query: '' };
+      }
+      return { command: 'search', query };
+    }
+
+    // Check if it's just "search" with nothing after
+    if (lowerTrimmed === 'search') {
+      return { command: 'search-help', query: '' };
+    }
+
+    // Default: no recognized command, treat as query
+    return { command: 'default', query: prompt };
+  }
+
+  /**
    * Stream formatted response to chat
    */
   private async streamResponse(queryResult: QueryResult, stream: vscode.ChatResponseStream): Promise<void> {
-    if (queryResult.results.length === 0) {
-      stream.markdown('No relevant wiki pages found. Try a different query.');
+    if (!queryResult || !queryResult.results) {
+      stream.markdown('Error: Invalid search results. Please try again.');
       return;
     }
 
-    stream.markdown(`Found ${queryResult.results.length} relevant wiki pages:\n\n`);
+    if (queryResult.results.length === 0) {
+      stream.markdown(
+        '📭 No wiki pages found for your search.\n\n' +
+        'Try:\n' +
+        '- Using shorter keywords\n' +
+        '- Rephrasing your search\n' +
+        '- Checking if your wiki pages exist with `@wiki ingest`'
+      );
+      return;
+    }
+
+    stream.markdown(`🔍 Found ${queryResult.results.length} relevant wiki page${queryResult.results.length !== 1 ? 's' : ''}:\n\n`);
 
     for (const result of queryResult.results) {
-      const scorePercent = Math.round(result.relevanceScore * 100);
+      if (!result || !result.title) {
+        continue;
+      }
+      
+      const scorePercent = Math.round((result.relevanceScore || 0) * 100);
       stream.markdown(`**${result.title}** (${scorePercent}% match)\n`);
-      stream.markdown(`${result.excerpt.slice(0, 150)}...\n\n`);
+      
+      const excerpt = result.excerpt || "(No preview available)";
+      stream.markdown(`${excerpt.slice(0, 150)}...\n\n`);
     }
 
     if (queryResult.usedFallback) {
-      stream.markdown('_Note: Results generated using fallback search method._\n\n');
+      stream.markdown('*Note: Results generated using fallback search method.*\n\n');
     }
 
     stream.markdown(

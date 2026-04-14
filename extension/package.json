@@ -24,12 +24,13 @@
     "copilot"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "workspaceContains:**/wiki/**",
+    "workspaceContains:**/raw/**",
     "onCommand:wiki.search",
     "onCommand:wiki.rebuildIndex",
     "onCommand:wiki.openRaw",
-    "onChatParticipant:karpathy-wiki.wiki",
-    "onStartupFinished"
+    "onCommand:wiki.ingest"
   ],
   "main": "./dist/extension.js",
   "contributes": {

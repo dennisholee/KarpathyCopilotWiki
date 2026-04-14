@@ -1,19 +1,30 @@
-# Quickstart: VS Code-Native Wiki Extension
+# Quickstart: VS Code Personal Wiki Extension
 
-Welcome to the Personal LLM Wiki quickstart. This guide walks you through the three core workflows using the **VS Code extension**: **Ingest**, **Query**, and **Lint**.
+Get your local knowledge base up and running in just 10 minutes. This guide covers installation, core workflows (Ingest, Query, Lint), graph visualization, and troubleshooting.
 
 ## Prerequisites
 
-1. **VS Code** 1.85+
-2. **GitHub Copilot** extension (optional, for semantic search)
-3. **Foam** extension (optional, for wiki graph visualization)
-4. Workspace directory with `/raw` and `/wiki` folders
+- **VS Code** 1.80.0 or later
+- **GitHub Copilot** extension (optional, enables semantic search; falls back to keyword search)
+- **Foam** extension (optional, enables interactive graph visualization)
+- Workspace with folders for `/raw` (source documents) and `/wiki` (generated pages)
 
-## Installation (one-time)
+## Installation
 
-### 1. Build the extension
+### Option 1: From VS Code Marketplace (Recommended)
 
-From the repository root:
+_Coming soon to VS Code Marketplace. For now, use Option 2._
+
+### Option 2: Build & Install from Source
+
+**Step 1: Clone the repository**
+
+```bash
+git clone https://github.com/karpathy/wiki-extension.git
+cd wiki-extension
+```
+
+**Step 2: Build the extension**
 
 ```bash
 cd extension
@@ -21,22 +32,45 @@ npm install
 npm run compile
 ```
 
-### 2. Launch in VS Code
-
-Press `F5` to debug the extension, or package it:
+**Step 3: Package the extension**
 
 ```bash
-npx vsce package  # Creates .vsix file
+npm run package
+# This creates karpathy-wiki-0.1.0.vsix
 ```
 
-Then in VS Code: Extensions → Install from VSIX
+**Step 4: Install in VS Code**
 
-### 3. Verify installation
+1. Open VS Code
+2. Run Command Palette: `Cmd+Shift+P` / `Ctrl+Shift+P`
+3. Search: **Extensions: Install from VSIX**
+4. Select the `.vsix` file created in Step 3
+5. Reload VS Code: `Cmd+R` / `Ctrl+R`
 
-In VS Code, open Command Palette (`Cmd+Shift+P`):
-- Search for `Wiki: Ingest`
-- You should see command suggestions
-- Create test directories: `mkdir -p raw wiki/decisions`
+**Step 5: Verify installation**
+
+1. Command Palette: `Cmd+Shift+P`
+2. Search: **Wiki: Ingest**
+3. Should see "Wiki: Ingest from /raw directory" suggestion
+4. Create test directories:
+   ```bash
+   mkdir -p raw wiki/decisions
+   ```
+
+### Option 3: Debug Mode (Development)
+
+For active development:
+
+```bash
+cd extension
+npm install
+npm run watch      # Watches for changes
+
+# In another terminal
+npm run test       # Run tests
+```
+
+Then press `F5` in VS Code to launch the debug instance.
 
 ---
 

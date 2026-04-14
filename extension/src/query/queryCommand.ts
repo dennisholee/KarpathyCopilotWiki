@@ -168,22 +168,35 @@ export class QueryHandler {
       const terms = query
         .toLowerCase()
         .split(/\s+/)
-        .filter((t) => t.length > 2);
+        .filter((t) => t.length > 1);
 
       if (terms.length === 0) {
+        this.logger.warn('No searchable terms found');
         return [];
       }
 
       // Search all wiki pages
       const pages = await this.wikiManager.listPages();
+      
+      if (!pages || pages.length === 0) {
+        this.logger.warn('No wiki pages available for search');
+        return [];
+      }
+      
       const scored: Array<SearchResultDetail & { score: number }> = [];
 
       for (const page of pages) {
+        if (!page || !page.id || !page.title) {
+          this.logger.debug('Skipping invalid page');
+          continue;
+        }
+
         let score = 0;
 
         // Title matches score highest
+        const pageTitle = page.title.toLowerCase();
         for (const term of terms) {
-          if (page.title.toLowerCase().includes(term)) {
+          if (pageTitle.includes(term)) {
             score += 3;
           }
         }
@@ -196,10 +209,11 @@ export class QueryHandler {
         }
 
         if (score > 0) {
+          const excerpt = plaintext.slice(0, 200) || "(No preview available)";
           scored.push({
             pageId: page.id,
             title: page.title,
-            excerpt: plaintext.slice(0, 200),
+            excerpt,
             relevanceScore: Math.min(score / 10, 1), // Normalize to 0-1
             matchType: 'title',
             score,
@@ -208,10 +222,13 @@ export class QueryHandler {
       }
 
       // Sort by score and return top results
-      return scored
+      const results = scored
         .sort((a, b) => b.score - a.score)
         .slice(0, maxResults)
         .map(({ score, ...result }) => result);
+      
+      this.logger.info(`Keyword search found ${results.length} results`);
+      return results;
     } catch (error) {
       this.logger.error(`Keyword search failed: ${String(error)}`);
       return [];

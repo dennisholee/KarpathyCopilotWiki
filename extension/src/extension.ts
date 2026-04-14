@@ -31,6 +31,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     wikiManager = new WikiManager(workspacePath, logger);
     indexManager = new IndexManager(workspacePath, logger);
     searchEngine = new SearchEngine(wikiManager, logger);
+    
+    // Initialize search engine (builds BM25 index)
+    try {
+      await searchEngine.initialize();
+      logger.info('Search engine initialized');
+    } catch (initError) {
+      logger.warn(`Failed to initialize search engine: ${String(initError)}, continuing with lazy initialization`);
+    }
+    
     chatParticipant = new WikiChatParticipant(searchEngine, wikiManager, logger);
 
     // Register commands
@@ -40,8 +49,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const handler: vscode.ChatRequestHandler = async (request, context, stream, token) => {
       return await chatParticipant.handle(request, context, stream, token);
     };
-    const participant = vscode.chat.createChatParticipant('wiki', handler);
-    context.subscriptions.push(participant);
+    
+    try {
+      // Register with full ID including extension name as per package.json contribution
+      const participant = vscode.chat.createChatParticipant('karpathy-wiki.wiki', handler);
+      participant.iconPath = new vscode.ThemeIcon('book');
+      context.subscriptions.push(participant);
+      logger.info('Chat participant "karpathy-wiki.wiki" registered successfully');
+    } catch (participantError) {
+      logger.error(`Failed to register chat participant: ${String(participantError)}`);
+      // Continue - non-critical feature
+    }
 
     // Initialize file watcher
     await wikiManager.initializeFileWatcher();
@@ -75,7 +93,7 @@ function registerCommands(
     vscode.commands.registerCommand('wiki.ingest', async () => {
       try {
         logger.info('Starting wiki ingest...');
-        vscode.window.showInformationMessage('Starting wiki ingest...');
+        vscode.window.showInformationMessage('Starting wiki ingest from /raw directory...');
 
         const progress = await vscode.window.withProgress(
           {
@@ -84,19 +102,55 @@ function registerCommands(
             cancellable: false,
           },
           async (progress) => {
-            progress.report({ message: 'Ingesting files...' });
-            await wikiManager.ingestFromRaw();
-            progress.report({ message: 'Rebuilding index...' });
-            await indexManager.rebuildIndex();
+            try {
+              progress.report({ message: 'Scanning /raw directory...', increment: 0 });
+              
+              progress.report({ 
+                message: `Processing files: extracting text...`, 
+                increment: 10 
+              });
+              
+              await wikiManager.ingestFromRaw();
+              
+              progress.report({ 
+                message: 'Detecting backlinks...', 
+                increment: 40 
+              });
+              
+              progress.report({ 
+                message: 'Rebuilding index and glossary...', 
+                increment: 80 
+              });
+              
+              await indexManager.rebuildIndex();
+              
+              progress.report({ 
+                message: 'Ingest complete!', 
+                increment: 100 
+              });
+            } catch (ingestError) {
+              logger.error(`Ingest progress error: ${String(ingestError)}`);
+              throw ingestError;
+            }
           }
         );
 
-        vscode.window.showInformationMessage('Wiki ingest completed!');
+        vscode.window.showInformationMessage('✅ Wiki ingest completed! Check wiki/ for new pages.');
         logger.info('Wiki ingest completed successfully');
       } catch (error) {
         const errorMessage = ErrorHandler.handle(error, 'Wiki ingest failed');
-        vscode.window.showErrorMessage(errorMessage);
-        logger.error(errorMessage);
+        logger.error(`Ingest failed: ${errorMessage}`);
+        
+        // Provide recovery suggestions
+        const choice = await vscode.window.showErrorMessage(
+          `Ingest failed: ${errorMessage}`,
+          'Retry',
+          'Dismiss'
+        );
+        
+        if (choice === 'Retry') {
+          await vscode.commands.executeCommand('wiki.ingest');
+        }
       }
     })
   );
@@ -142,24 +196,52 @@ function registerCommands(
           return;
         }
 
+        const isQuick = quickOnly.label === 'Quick';
         vscode.window.showInformationMessage(
-          `Running ${quickOnly.label} wiki lint...`
+          `Running ${quickOnly.label} wiki lint analysis...`
         );
 
-        const results = await wikiManager.lint(quickOnly.label === 'Quick');
-        logger.info(`Lint completed: ${JSON.stringify(results)}`);
-
-        vscode.window.showInformationMessage(
-          `Lint complete: ${results.orphanCount || 0} orphans ${
-            quickOnly.label === 'Deep'
-              ? `, ${results.contradictionCount || 0} contradictions`
-              : ''
-          }`
+        let results: any;
+        
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Wiki Lint (${quickOnly.label})`,
+            cancellable: false,
+          },
+          async (progress) => {
+            try {
+              progress.report({ message: 'Analyzing pages...', increment: 20 });
+              results = await wikiManager.lint(isQuick);
+              
+              if (!isQuick) {
+                progress.report({ message: 'Checking for contradictions...', increment: 60 });
+              }
+              
+              progress.report({ message: 'Complete!', increment: 100 });
+            } catch (lintError) {
+              logger.error(`Lint error during analysis: ${String(lintError)}`);
+              throw lintError;
+            }
+          }
         );
+
+        const orphanCount = results?.orphanCount || 0;
+        const contradictionCount = results?.contradictionCount || 0;
+        
+        const message = isQuick
+          ? `✅ Lint complete: ${orphanCount} orphan pages found`
+          : `✅ Lint complete: ${orphanCount} orphans, ${contradictionCount} potential contradictions`;
+        
+        vscode.window.showInformationMessage(message);
+        logger.info(`Lint completed: ${message}`);
       } catch (error) {
         const errorMessage = ErrorHandler.handle(error, 'Wiki lint failed');
-        vscode.window.showErrorMessage(errorMessage);
-        logger.error(errorMessage);
+        logger.error(`Lint failed: ${errorMessage}`);
+        
+        vscode.window.showErrorMessage(
+          `Lint failed: ${errorMessage}`
+        );
       }
     })
   );
@@ -169,7 +251,7 @@ function registerCommands(
     vscode.commands.registerCommand('wiki.indexRebuild', async () => {
       try {
         logger.info('Rebuilding wiki index...');
-        vscode.window.showInformationMessage('Rebuilding wiki index...');
+        vscode.window.showInformationMessage('Rebuilding wiki index and glossary...');
 
         await vscode.window.withProgress(
           {
@@ -178,17 +260,34 @@ function registerCommands(
             cancellable: false,
           },
           async (progress) => {
-            progress.report({ message: 'Scanning wiki pages...' });
-            await indexManager.rebuildIndex();
+            try {
+              progress.report({ message: 'Scanning wiki pages...', increment: 20 });
+              progress.report({ message: 'Building index...', increment: 50 });
+              await indexManager.rebuildIndex();
+              progress.report({ message: 'Generating glossary...', increment: 80 });
+              progress.report({ message: 'Complete!', increment: 100 });
+            } catch (rebuildError) {
+              logger.error(`Index rebuild error: ${String(rebuildError)}`);
+              throw rebuildError;
+            }
           }
         );
 
-        vscode.window.showInformationMessage('Wiki index rebuilt successfully!');
+        vscode.window.showInformationMessage('✅ Wiki index rebuilt successfully!');
         logger.info('Wiki index rebuild completed');
       } catch (error) {
         const errorMessage = ErrorHandler.handle(error, 'Index rebuild failed');
-        vscode.window.showErrorMessage(errorMessage);
-        logger.error(errorMessage);
+        logger.error(`Index rebuild failed: ${errorMessage}`);
+        
+        const choice = await vscode.window.showErrorMessage(
+          `Index rebuild failed: ${errorMessage}`,
+          'Retry',
+          'Dismiss'
+        );
+        
+        if (choice === 'Retry') {
+          await vscode.commands.executeCommand('wiki.indexRebuild');
+        }
       }
     })
   );
