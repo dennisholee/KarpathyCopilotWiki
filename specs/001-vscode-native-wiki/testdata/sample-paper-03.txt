@@ -1,0 +1,75 @@
+# Transformer Architecture and Attention Mechanisms
+
+## Introduction
+The **transformer architecture** revolutionized **natural language processing** through the introduction of **attention mechanisms**. Published by Vaswani et al. in "Attention Is All You Need" (2017), transformers replaced **recurrent neural networks** for sequence modeling tasks.
+
+## Core Components
+
+### Self-Attention Module
+The **self-attention** mechanism computes relationships between all tokens in a sequence. Each token generates three representations:
+- **Query** (Q): What am I looking for?
+- **Key** (K): What do I represent?
+- **Value** (V): What information do I contain?
+
+The **attention score** is computed as: softmax(QK^T / sqrt(d_k)) * V
+
+### Multi-Head Attention
+**Multi-head attention** runs multiple **self-attention** operations in parallel. This allows the model to attend to different representation subspaces. The **attention heads** are then concatenated and projected.
+
+### Feed-Forward Networks
+Between attention layers, **feed-forward networks** apply non-linear transformations. These typically consist of two dense layers with ReLU activation:
+- Linear projection to higher dimension
+- ReLU **activation function** 
+- Linear projection back to model dimension
+
+### Positional Encoding
+Since transformers lack **recurrent connections**, they explicitly encode position information. **Positional encoding** uses sine and **cosine waves** at different frequencies to represent absolute position.
+
+## Training Process
+
+### Pre-training Objectives
+**Language models** are typically pre-trained on two objectives:
+1. **Masked language modeling** (MLM): Predict masked tokens
+2. **Next sentence prediction** (NSP): Determine if sentences follow sequentially
+
+### Fine-tuning for Downstream Tasks
+After pre-training, models are **fine-tuned** on specific **downstream tasks** like **sentiment analysis**, **question answering**, or **machine translation**.
+
+## Popular Implementations
+
+### BERT (Bidirectional Encoder Representations from Transformers)
+**BERT** uses bidirectional pre-training with **masked language modeling**. It provides strong baseline performance across **NLP tasks**. Variants include RoBERTa, DistilBERT, and ALBERT.
+
+### GPT (Generative Pre-trained Transformer)
+**GPT** models use unidirectional **autoregressive** pre-training. GPT-2 and GPT-3 demonstrated impressive **few-shot learning** capabilities. **Prompt engineering** became critical for eliciting desired outputs.
+
+### T5 (Text-to-Text Transfer Transformer)
+**T5** frames all **NLP tasks** as text-to-text problems. This unified approach simplifies **transfer learning** and enables efficient **multi-task learning**.
+
+## Performance Characteristics
+
+### Computational Requirements
+Transformers require significant **computational** resources:
+- **Memory**: O(n²) for **self-attention** (quadratic in sequence length)
+- **Training time**: Days or weeks on large datasets
+- **Inference**: Linear time but higher latency than **RNNs**
+
+### Long-Range Dependencies
+A key strength is handling **long-range dependencies**. **Self-attention** directly connects distant tokens, avoiding **vanishing gradients** problems of **RNNs**.
+
+## Recent Advances
+
+### Efficient Transformers
+Research has addressed the O(n²) complexity:
+- **Sparse attention** patterns reduce computation
+- **Linear attention** approximations lower complexity
+- **Knowledge distillation** creates smaller efficient models
+
+### Vision Transformers
+**Vision Transformers** (ViT) apply transformer architecture to images. Dividing images into patches and treating them as tokens achieves competitive **image classification** results.
+
+### Multimodal Models
+Recent **foundation models** like CLIP combine **vision** and **language** understanding in a unified **transformer** framework.
+
+## Conclusion
+The **transformer architecture** fundamentally changed **deep learning** approaches to sequential data. Its ability to capture **long-range dependencies** through **self-attention** while remaining parallelizable makes it ideal for modern **machine learning** systems. Ongoing research continues to improve efficiency and extend **transformers** to new domains beyond **language** and **vision**.

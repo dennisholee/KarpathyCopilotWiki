@@ -1,43 +1,4 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
+# Python - removed (TypeScript extension only)
 .nox/
 .coverage
 .coverage.*
@@ -142,3 +103,13 @@ reports/
 # Wiki generated artifacts (manual review)
 wiki/glossary.md
 wiki/index.md
+
+# Node.js / TypeScript (VS Code Extension)
+node_modules/
+dist/
+out/
+*.tsbuildinfo
+.vscodeignore
+npm-debug.log
+yarn-error.log
+pnpm-debug.log

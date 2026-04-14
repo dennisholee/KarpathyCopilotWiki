@@ -58,14 +58,16 @@ Acceptance Scenarios:
 - **FR-002**: Generated pages MUST follow the constitution's page schema: `Title`, `Summary`, `Tags`, `Links`, `Content`.
 - **FR-003**: Filenames MUST follow the `YYYYMMDDNN` convention and be unique per day.
 - **FR-004**: Backlinks MUST be created automatically when an extracted concept maps to an existing wiki page.
-- **FR-005**: Query responses MUST cite supporting wiki pages and `/raw` sources; conversations MUST be archived as `Decision` pages.
-- **FR-006**: Linting must produce actionable reports identifying orphans and contradictory claims.
+- **FR-005**: Query responses via extension MUST cite supporting wiki pages and `/raw` sources; conversations MUST be archived as `Decision` pages.
+- **FR-006**: Linting must produce actionable reports identifying orphans and contradictory claims via extension command.
 - **FR-007**: Generated Markdown must remain CommonMark-compatible and Foam-friendly for graph visualization.
+- **FR-008**: Extension MUST integrate with VS Code Copilot Chat for semantic operations (embeddings, content generation) without requiring separate API key configuration.
 
 ### Non-functional Requirements
 
-- Processing latency: single-file ingestion should complete within a reasonable time (configurable); default target: < 2 minutes for typical research PDFs.
-- Local-only operation: all content and transformations occur locally unless explicit publish/remote step is approved.
+- Processing latency: Single-file ingestion should complete within reasonable time via extension background task (configurable); default target: < 2 minutes for typical research PDFs.
+- VS Code-native integration: All operations occur within VS Code extension context. Copilot Chat provides semantic operations (embeddings, reasoning). No external API calls required.
+- Local-first document processing: PDF/text extraction, metadata parsing, and ingestion orchestration occur locally within the extension runtime. Copilot Chat communication is mediated through VS Code's secure extension API.
 
 ## Key Entities
 
@@ -84,28 +86,54 @@ Acceptance Scenarios:
 ## Assumptions
 
 - Foam (or Foam-like linking) is available as a VS Code extension to visualize the graph and resolve `[[WikiLinks]]`.
-- GitHub Copilot (or the local Copilot integration) can be invoked programmatically or via a user-assisted command to help extract candidate concepts and draft pages.
+- GitHub Copilot extension is installed and authenticated in VS Code; Copilot Chat API is available for integration.
+- VS Code API supports extensions that programmatically interact with editor tasks, file watchers, and extension communication.
 - The repository contains `/raw` and `/wiki` directories at the repository root.
+- Python runtime and PDF extraction libraries are available locally for text extraction within the extension context.
 
 ## Implementation Notes
 
-1. Pipeline overview:
-   - Watcher detects new file in `/raw` → run ingestion CLI command.
-   - Extraction: run a local text-extractor (pdf->text) + simple NLP to find candidate concepts (titles, sections, named entities).
-    - Draft pages: Copilot assists to synthesize `Summary` + `Content` sections; generated pages must include `Links` back to `/raw` file(s).
-       - Pages will be created as entity/concept-level atomic pages (one concept per file) in accordance with the wiki constitution's "Atomic Notes" rule. Filenames follow `YYYYMMDDNN` and each page must include `Title`, `Summary`, `Tags`, `Links`, and `Content` fields.
-   - Backlinks: match candidate concepts against existing `WikiPage` titles/aliases and insert `[[WikiLinks]]` and update both pages.
-   - Index/Glossary update: append or reconcile entries in `index.md` and `glossary.md`.
+1. **Architecture**: 
+   - Implement as a TypeScript/JavaScript VS Code extension
+   - Integrate directly with VS Code's Copilot Chat for semantic reasoning and content generation
+   - Use editor's native authentication (no separate API key management required)
+   - Deprecate Python CLI tools (`tools/ingest`, `tools/query`, `tools/lint`)
+   - Package for local development and workspace deployment (not published to Marketplace)
 
-2. Safety: If an assertion cannot be grounded in `/raw`, create a `Needs Source` note rather than asserting it as fact.
+2. **Embedding Strategy within Extension**: 
+   - Primary: VS Code Copilot Chat for semantic operations (embeddings implicit via chat context)
+   - Fallback: Local embeddings (`sentence-transformers/all-MiniLM-L6-v2`) if Copilot Chat unavailable
+   - Graceful degradation: If embedding/semantic service fails, fall back to keyword-based search
 
-3. Linting: Implement two modes—`quick` (orphan discovery) and `deep` (claim-diff + source-contrast).
+3. Pipeline overview (extension commands):
+   - Watcher detects new file in `/raw` → trigger ingestion command
+   - Extraction: Local text-extractor (pdf->text) + simple NLP to find candidate concepts (titles, sections, named entities)
+   - Draft pages: Copilot Chat assists to synthesize `Summary` + `Content` sections; generated pages must include `Links` back to `/raw` file(s)
+       - Pages created as entity/concept-level atomic pages in accordance with wiki constitution's "Atomic Notes" rule
+       - Filenames follow `YYYYMMDDNN` format
+       - Each page includes `Title`, `Summary`, `Tags`, `Links`, and `Content` fields
+   - Backlinks: Match candidate concepts against existing `WikiPage` titles/aliases and insert `[[WikiLinks]]`; update both pages bidirectionally
+   - Index/Glossary update: Append or reconcile entries in `index.md` and `glossary.md`
+
+4. Safety: If an assertion cannot be grounded in `/raw`, create a `Needs Source` note rather than asserting it as fact.
+
+5. Linting: Implement two modes—`quick` (orphan discovery) and `deep` (claim-diff + source-contrast)
 
 ## Clarifications
 
 ### Session 2026-04-13
 
 - Q: Preferred page granularity for generated wiki pages (Section-level / Entity-level / Hybrid / Document-per-source)? → A: B — Entity/concept-level atomic pages (one concept per file). 
+
+### Session 2026-04-14
+
+- Q: Copilot Integration Strategy (Local-First / Copilot-Preferred / Copilot-Only / Unclear)? → A: B — **Copilot-Preferred**: GitHub Copilot API is the primary embedding provider for semantic search and query operations. Local embeddings (`sentence-transformers/all-MiniLM-L6-v2`) serve as automatic fallback if Copilot API is unavailable or `GITHUB_COPILOT_API_KEY` is not configured. This prioritizes higher-quality semantic search results while maintaining resilience through local fallback.
+
+- Q: Copilot Integration Method (GitHub Copilot API / VS Code Copilot Chat / Hybrid)? → A: B — **VS Code Copilot Chat**: Application integrates directly with VS Code's native Copilot Chat extension using the editor's built-in authentication. This approach eliminates the need for separate API key management (`GITHUB_COPILOT_API_KEY`) and provides seamless editor-integrated UX.
+
+- Q: Python CLI vs VS Code Extension Architecture (Retain CLI + add extension / Replace with extension / CLI wraps Python)? → A: B — **Extension-First**: Migrate core ingest/query/lint logic to TypeScript/JavaScript within a VS Code extension. Python CLI tools will be deprecated. Single unified environment (VS Code extension) improves UX and removes CLI-specific maintenance burden.
+
+- Q: Extension Distribution Strategy (Local Development / Published to Marketplace / Private Registry)? → A: A — **Local Development**: Extension packaged for local development and workspace deployment only. Not published to VS Code Marketplace. Maintains flexibility for personal customization and evolving requirements.
 
 
 ## Next Steps
@@ -116,4 +144,7 @@ Acceptance Scenarios:
 
 ---
 
-**Notes**: All generated pages MUST comply with the wiki constitution: Markdown-first, atomic notes, traceability to `/raw`, and `YYYYMMDDNN` filenames.
+**Notes**: 
+- All generated pages MUST comply with the wiki constitution: Markdown-first, atomic notes, traceability to `/raw`, and `YYYYMMDDNN` filenames.
+- **Implementation note**: Current Python CLI tools (`tools/ingest`, `tools/query`, `tools/lint`) were developed during clarification phase and should be deprecated in favor of the VS Code extension implementation. The extension will provide equivalent functionality with superior UX via VS Code Copilot Chat integration.
+- **Migration path**: Existing wiki data and structures remain compatible. The extension will read/write to the same `/raw` and `/wiki` directories using identical page schema.

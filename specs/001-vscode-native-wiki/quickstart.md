@@ -1,56 +1,42 @@
-# Quickstart: VS Code-Native Wiki
+# Quickstart: VS Code-Native Wiki Extension
 
-Welcome to the Personal LLM Wiki quickstart. This guide walks you through the three core workflows: **Ingest**, **Query**, and **Lint**.
+Welcome to the Personal LLM Wiki quickstart. This guide walks you through the three core workflows using the **VS Code extension**: **Ingest**, **Query**, and **Lint**.
 
 ## Prerequisites
 
-1. Python 3.11+ installed.
-2. VS Code with the Foam extension installed.
-3. GitHub Copilot extension (optional, for editor-assist drafting).
-4. Repository checked out with `/raw` and `/wiki` directories at the root.
+1. **VS Code** 1.85+
+2. **GitHub Copilot** extension (optional, for semantic search)
+3. **Foam** extension (optional, for wiki graph visualization)
+4. Workspace directory with `/raw` and `/wiki` folders
 
-## Setup (one-time)
+## Installation (one-time)
 
-### 1. Install dependencies
+### 1. Build the extension
 
 From the repository root:
 
 ```bash
-python -m pip install -r requirements.txt
+cd extension
+npm install
+npm run compile
 ```
 
-Or manually install the recommended stack:
+### 2. Launch in VS Code
+
+Press `F5` to debug the extension, or package it:
 
 ```bash
-python -m pip install pymupdf pdfplumber pytesseract spacy sentence-transformers jinja2 pytest
-python -m spacy download en_core_web_sm
+npx vsce package  # Creates .vsix file
 ```
 
-For OCR support (optional), install Tesseract:
-
-**macOS:**
-```bash
-brew install tesseract
-```
-
-**Ubuntu/Debian:**
-```bash
-sudo apt-get install tesseract-ocr
-```
-
-### 2. Create directories (if they don't exist)
-
-```bash
-mkdir -p raw wiki wiki/decisions reports
-```
+Then in VS Code: Extensions → Install from VSIX
 
 ### 3. Verify installation
 
-```bash
-python -m pytest tests/unit/ -v
-```
-
-If all tests pass, you're ready to ingest.
+In VS Code, open Command Palette (`Cmd+Shift+P`):
+- Search for `Wiki: Ingest`
+- You should see command suggestions
+- Create test directories: `mkdir -p raw wiki/decisions`
 
 ---
 
@@ -60,211 +46,253 @@ Convert research papers, notes, or articles in `/raw` into atomic wiki pages in 
 
 ### Step 1: Add a source document
 
-Copy a PDF, TXT, or Markdown file into `/raw`:
+Copy a PDF or text file into `/raw`:
 
 ```bash
 cp ~/Documents/my-research.pdf raw/
 ```
 
-### Step 2: Run ingestion
+### Step 2: Run ingestion via VS Code
+
+1. Open Command Palette: `Cmd+Shift+P` / `Ctrl+Shift+P`
+2. Run: **Wiki: Ingest Document**
+3. Select a PDF from `/raw`
+4. Watch the progress bar:
+   - 📄 Extracting text...
+   - 🔍 Analyzing concepts...
+   - 📝 Generating wiki pages...
+   - ✅ Ingest complete
+
+### Step 3: Review generated pages
+
+Pages are created in `/wiki/` with names like `20240414001.md`:
 
 ```bash
-python tools/ingest/ingest.py run
+ls wiki/ | grep "2024"
 ```
 
-This command:
-- Scans `/raw` for new files.
-- Extracts text (PDF → text, with OCR fallback for scanned docs).
-- Generates candidate concepts (titles, entities, sections).
-- Creates draft wiki pages in `/wiki/` with filenames like `20260413XX.md`.
-- Inserts backlinks using `[[WikiLinks]]` to existing pages.
-- Updates `wiki/index.md` and `wiki/glossary.md`.
-
-### Step 3: Review drafts (optional)
-
-To preview drafts before committing:
-
-```bash
-python tools/ingest/ingest.py run --preview
-```
-
-This opens a local preview of each draft. Approve or edit before writing to disk.
+Content includes:
+- Title, Summary, Tags, Links (auto-generated)
+- `[[WikiLink]]` references to related pages
+- Source attribution back to `/raw`
 
 ### Step 4: Verify in Foam
 
-Open VS Code and:
-
-1. Open the `/wiki` folder.
-2. Press `Ctrl+Shift+P` (or `Cmd+Shift+P` on macOS) and select "Foam: Show Graph".
-3. Explore the graph — you'll see your new pages and their backlinks.
+1. Open `/wiki` folder in VS Code
+2. Install **Foam** extension (optional)
+3. Command Palette → **Foam: Show Graph**
+4. Explore the interactive knowledge graph!
 
 ---
 
-## Workflow 2: Query (Ask & Archive)
+## Workflow 2: Query (Ask & Archive Decisions)
 
-Ask questions about your wiki content; the system answers and archives the conversation as a **Decision** page.
+Ask questions about your wiki content; the system searches, answers, and archives the conversation.
 
-### Step 1: Trigger query
+### Step 1: Start Copilot Chat
 
-```bash
-python tools/query/query.py "What is the main topic of my recent papers?"
+1. Open VS Code
+2. Click the **Copilot** icon in the Activity Bar (or `Ctrl+Shift+I` / `Cmd+Shift+I`)
+3. Type a question about your wiki topics:
+
 ```
-
-Or use the VS Code command palette:
-- Press `Ctrl+Shift+P` and search for `"Wiki: Query"`.
-- Type your question.
+What are the main concepts in my papers?
+Explain how transformers work
+Compare different optimization algorithms
+```
 
 ### Step 2: Review the answer
 
-The system:
-- Searches `/wiki` for relevant pages.
-- Formulates an answer with citations.
-- Optionally invokes GitHub Copilot (if in Editor-Assist mode) for polish.
+The extension:
+- 📚 Searches `/wiki` for relevant pages
+- 💡 Injects matched pages as context for Copilot
+- 📊 Shows relevance scores (% match)
+- 🔗 Cites supporting pages
 
 ### Step 3: Archive the decision
 
-The conversation is automatically saved to `/wiki/decisions/YYYYMMDDNN.md` with:
-- The question and answer transcript.
-- Links to supporting wiki pages.
-- Links to `/raw` sources.
+Click **📌 Archive this conversation** to:
+- Save Q&A as a Decision page in `/wiki/decisions/`
+- Preserve conversation transcript
+- Link supporting wiki pages
+- Include source references
 
-Example output:
-
+Example archived decision:
 ```
-Title: Decision: Main topic of recent papers
+/wiki/decisions/20240414101353_transformers_explanation_a1b2.md
 
-Summary: Papers explore knowledge graphs and semantic modeling.
+---
+title: Decision - How transformers work
+created: 2024-04-14T10:13:53Z
+tags: ["decision", "copilot-chat", "archived"]
+---
 
-Tags: decision,research-summary
+## Question
+Explain how transformers work
 
-Links:
-- /wiki/20260413XX.md (Knowledge Graphs)
-- /raw/my-research.pdf
+## Conversation  
+User: Explain how transformers work
+Assistant: Transformers are based on self-attention mechanisms...
 
-Content:
-
---- Transcript ---
-
-User: What is the main topic of my recent papers?
-Agent: Your recent papers (sourced from `my-research.pdf`) focus on...
-
-Rationale: Grounded in page [[Knowledge Graphs]] and [[Semantic Modeling]].
+## Supporting Pages
+- [[Attention Mechanisms]]
+- [[Self-Attention]]
+- [[Transformer Architecture]]
 ```
 
 ---
 
 ## Workflow 3: Lint (Audit & Maintain)
 
-Scan your wiki for orphan pages, contradictions, and missing sources.
+Scan your wiki for orphan pages, contradictions, and quality issues.
 
-### Step 1: Run quicklint (orphan detection)
+### Step 1: Run lint analysis
 
-```bash
-python tools/lint/orphan_check.py
+1. Command Palette: `Cmd+Shift+P` / `Ctrl+Shift+P`
+2. Run: **Wiki: Lint**
+3. Choose mode:
+   - **Quick**: Fast orphan detection (pages with no inbound links)
+   - **Deep**: Thorough analysis including contradictions & quality checks
+
+### Step 2: Review results
+
+Output appears in the Output Panel:
+
+```
+🔍 Lint Report (Deep Mode)
+
+✗ Orphans (2 pages):
+  - 20240414005.md (Neural Network Basics - no backlinks)
+  - 20240414007.md (Data Structures - no backlinks)
+
+⚠ Quality Issues (1 page):
+  - 20240414003.md (Optimization - missing related links)
+
+✗ Potential Contradictions (1):
+  - "SGD convergence" vs "Adam convergence" 
+    Sources: /raw/paper1.pdf vs /raw/paper2.pdf
 ```
 
-Output: `reports/orphans-YYYYMMDD.md` listing pages with no inbound links, grouped by age and tag.
+### Step 3: Fix issues
 
-### Step 2: Run deeplint (claim-diff)
+**For orphaned pages:**
+1. Add them to index or other pages as backlinks
+2. Or delete if truly unneeded: `rm /wiki/20240414005.md`
 
-```bash
-python tools/lint/claim_diff.py
-```
+**For contradictions:**
+1. Read both source documents
+2. Reconcile or add context to one/both pages
+3. Add note: `Ref: /raw/paper1.pdf vs /raw/paper2.pdf`
 
-Output: `reports/conflicts-YYYYMMDD.md` listing contradictory claims that cite different `/raw` sources (requires human review).
+**For quality issues:**
+1. Open the page in VS Code
+2. Add missing `[[WikiLink]]` references
+3. Save: `Cmd+S` / `Ctrl+S`
 
-### Step 3: Review remediation suggestions
+### Step 4: Re-run lint
 
-```bash
-python tools/lint/remediation_report.py
-```
-
-Output: `reports/remediation-YYYYMMDD.md` with suggested actions:
-- **Merge**: combine similar pages.
-- **Split**: break overly broad pages.
-- **Add Source**: ground orphan assertions in `/raw`.
-
-### Step 4: Apply fixes
-
-Remediation suggestions can be exported as a patch or PR draft:
-
-```bash
-python tools/lint/remediation_report.py --output-patch > wiki.patch
-git apply wiki.patch
-```
-
----
-
-## Advanced: Automate Ingestion with File Watcher
-
-To automatically ingest new files as they arrive in `/raw`:
-
-```bash
-bash scripts/watch-raw.sh
-```
-
-This script monitors `/raw` and triggers `ingest.py run` when new files are detected.
-
----
-
-## Common Tasks
-
-### Task: Re-generate index and glossary
-
-```bash
-python tools/ingest/ingest.py index rebuild
-```
-
-### Task: Check for "Needs Source" pages
-
-```bash
-grep -r "needs_source: true" wiki/
-```
-
-Or use the linting tool:
-
-```bash
-python tools/lint/orphan_check.py --include-needs-source
-```
-
-### Task: Export wiki as static site (future)
-
-Once the wiki stabilizes, export to static HTML:
-
-```bash
-python tools/export/export-static.py --output docs/
-```
-
-(This task is not yet implemented; see [#XXX](issue-placeholder).)
+After fixes, re-run **Wiki: Lint** to verify improvements.
 
 ---
 
 ## Troubleshooting
 
-### "PDF extraction failed"
+### PDF Extraction Failed
 
-- Verify the PDF is not corrupted: `pdfinfo <file.pdf>` (install `poppler-utils` if needed).
-- Check if the PDF is scanned (image-based). If so, OCR will be attempted automatically.
-- Try alternate extractor: use `pdfplumber` CLI directly to debug.
+**Error**: `Failed to extract text from PDF. The file may be corrupted...`
 
-### "Backlink not inserted"
+**Solutions**:
+1. Try converting PDF to text: `pdftotext file.pdf file.txt`
+2. Verify PDF is not password-protected
+3. Use OCR if scanned: https://www.onlineocr.net/
 
-- Check that the target page exists under `/wiki` with a matching title or alias.
-- Run with verbose logging: `python tools/ingest/ingest.py run --verbose`.
-- Ensure the Foam extension recognizes the `[[WikiLink]]` syntax (should be automatic).
+### No Concepts Found
 
-### "Query returns no results"
+**Error**: `⚠️ No concepts found in document`
 
-- Verify that wiki pages exist and have `links` fields pointing to `/raw`.
-- Check that your query question matches page content (try broader terms).
-- Run linting to check for orphan pages: `python tools/lint/orphan_check.py`.
+**Cause**: PDF is too short or lacks text
+
+**Solution**: Provide at least 500 words of searchable text
+
+### Copilot Unavailable
+
+**Error**: `Copilot Chat unavailable. Using local search fallback...`
+
+**Solution**:
+1. Install GitHub Copilot extension
+2. Sign in: Command Palette → `GitHub Copilot: Sign In`
+3. Extension will automatically use keyword search fallback
+
+### File Permission Denied
+
+**Error**: `Permission denied. Check file/folder permissions...`
+
+**Solution**:
+```bash
+chmod -R u+w ~/path/to/wiki
+```
+
+---
+
+## Common Tasks
+
+### See all wiki pages
+
+```bash
+ls /wiki/ | wc -l
+```
+
+Or open VS Code File Explorer and browse `/wiki`
+
+### Search within the wiki
+
+**In VS Code**: `Ctrl+Shift+F` / `Cmd+Shift+F` to search all `.md` files
+
+**Via Copilot Chat**: Ask any question; extension searches and provides results
+
+### Re-generate index and glossary
+
+1. Command Palette: `Cmd+Shift+P` / `Ctrl+Shift+P`
+2. Run: **Wiki: Rebuild Index**
+3. Creates/updates `/wiki/index.md` (by category) and `/wiki/glossary.md` (term definitions)
+
+### Batch ingest multiple PDFs
+
+1. Drop 3+ PDFs in `/raw/`
+2. Run **Wiki: Ingest Document** for each, or
+3. Use File Watcher (auto-detects changes):
+   - VS Code will automatically trigger ingest when files appear in `/raw/`
+
+### Export wiki as static site (future)
+
+Not yet implemented. This is a Phase 3 enhancement.
+
+---
+
+## Settings & Configuration
+
+Edit `.vscode/settings.json` to customize:
+
+```json
+{
+  "wiki.pdfBackend": "pdfjs",
+  "wiki.maxConceptsPerPage": 15,
+  "wiki.backlinkMinConfidence": 0.75,
+  "wiki.enableDebugLogging": true
+}
+```
 
 ---
 
 ## Next Steps
 
-- Add your first research paper to `/raw` and run ingestion.
-- Explore the Foam graph to see emerging concept clusters.
+- ✅ Ingest your first research paper
+- ✅ Query via Copilot Chat
+- ✅ Archive decisions to `/wiki/decisions/`
+- ✅ Install Foam to visualize the knowledge graph
+- 📖 Read [research.md](research.md) for architecture details
+- 🔧 Read [data-model.md](data-model.md) for page schema
+- 🧪 Run tests: `cd extension && npm test`
 - Ask queries to discover knowledge relationships.
 - Set up the file watcher for hands-off automation.
 - Join the community discussions for feature requests.

@@ -1,0 +1,200 @@
+{
+  "name": "karpathy-wiki",
+  "displayName": "Karpathy's Personal Wiki",
+  "description": "VS Code extension for managing a local wiki with Copilot Chat integration",
+  "version": "0.1.0",
+  "publisher": "karpathy",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/karpathy/wiki-extension.git"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Notebooks",
+    "Other"
+  ],
+  "keywords": [
+    "wiki",
+    "knowledge-base",
+    "notes",
+    "semantic-search",
+    "copilot"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/wiki/**",
+    "onCommand:wiki.search",
+    "onCommand:wiki.rebuildIndex",
+    "onCommand:wiki.openRaw",
+    "onChatParticipant:karpathy-wiki.wiki",
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "wiki.search",
+        "title": "Search Wiki",
+        "category": "Wiki"
+      },
+      {
+        "command": "wiki.rebuildIndex",
+        "title": "Rebuild Index",
+        "category": "Wiki"
+      },
+      {
+        "command": "wiki.openRaw",
+        "title": "Open Raw Document",
+        "category": "Wiki"
+      },
+      {
+        "command": "wiki.openSettings",
+        "title": "Extension Settings",
+        "category": "Wiki"
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "karpathy-wiki.wiki",
+        "name": "wiki",
+        "fullName": "Wiki",
+        "description": "Search and navigate your personal wiki",
+        "isSticky": false,
+        "commands": [
+          {
+            "name": "search",
+            "description": "Full-text search across wiki pages"
+          },
+          {
+            "name": "rebuild",
+            "description": "Rebuild wiki index"
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Wiki Extension",
+      "properties": {
+        "wiki.rawDir": {
+          "type": "string",
+          "default": "raw",
+          "description": "Path to raw documents folder (relative to workspace root)"
+        },
+        "wiki.wikiDir": {
+          "type": "string",
+          "default": "wiki",
+          "description": "Path to wiki folder (relative to workspace root)"
+        },
+        "wiki.cacheDir": {
+          "type": "string",
+          "default": ".vscode/wiki-cache",
+          "description": "Path to cache folder (relative to workspace root)"
+        },
+        "wiki.maxFileSize": {
+          "type": "integer",
+          "default": 104857600,
+          "description": "Maximum file size to process in bytes (100MB default)"
+        },
+        "wiki.debounceMs": {
+          "type": "integer",
+          "default": 500,
+          "description": "File watcher debounce delay in milliseconds"
+        },
+        "wiki.rebuildOnStartup": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically rebuild index on extension startup"
+        },
+        "wiki.enableSemanticSearch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable semantic search using embeddings"
+        },
+        "wiki.enableDebugLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable verbose debug logging"
+        },
+        "wiki.pdfBackend": {
+          "type": "string",
+          "enum": ["pdfjs", "python-backend"],
+          "default": "pdfjs",
+          "description": "PDF extraction backend (pdfjs for client-side, python-backend for server) — T042"
+        },
+        "wiki.maxConceptsPerPage": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum number of concepts/topics to extract per page (1-50) — T042"
+        },
+        "wiki.backlinkMinConfidence": {
+          "type": "number",
+          "default": 0.75,
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Minimum fuzzy-match confidence threshold for backlink insertion (0.0-1.0) — T042"
+        },
+        "wiki.showIngestProgress": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show progress bar and status messages during ingestion (T041)"
+        },
+        "wiki.enableConceptExtraction": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic concept extraction during ingest"
+        },
+        "wiki.enableBacklinkInsertion": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic backlink insertion during ingest"
+        },
+        "wiki.autoRebuildIndexAfterIngest": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically update index.md and glossary.md after ingestion"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && node esbuild.js",
+    "check-types": "tsc --noEmit",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && node esbuild.js --production",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\""
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^18.15.0",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "@vscode/test-cli": "^0.0.1",
+    "esbuild": "^0.18.0",
+    "eslint": "^8.43.0",
+    "jest": "^29.5.0",
+    "npm-run-all": "^4.1.5",
+    "prettier": "^3.0.0",
+    "ts-jest": "^29.1.0",
+    "ts-loader": "^9.4.2",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@tensorflow-models/universal-sentence-encoder": "^1.3.3",
+    "@tensorflow/tfjs": "^4.10.0",
+    "markdown-it": "^13.0.1",
+    "markdown-it-wikilinks": "^1.2.0",
+    "pdfjs-dist": "^3.11.174"
+  }
+}

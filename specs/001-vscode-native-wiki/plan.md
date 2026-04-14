@@ -4,19 +4,27 @@
 
 ## Summary
 
-Build an ingestion → synthesis → maintenance pipeline that converts source artifacts dropped into `/raw` into Foam-compatible, atomic Markdown pages in `/wiki`. The pipeline will be driven by a CLI and helper modules (extraction, concept discovery, drafting, backlink reconciliation) and integrated into VS Code workflows (Foam graph, command palette) so Copilot can be used as a drafting assistant while all outputs remain traceable to `/raw`.
+Build a VS Code extension that provides an ingestion → synthesis → maintenance pipeline converting source artifacts dropped into `/raw` into Foam-compatible, atomic Markdown pages in `/wiki`. The extension integrates directly with VS Code's Copilot Chat for semantic operations (embeddings, content generation) and provides command palette commands for ingest, query, and lint workflows. All outputs remain traceable to `/raw` and compatible with Foam graph visualization.
 
 ## Technical Context
 
-**Language/Version**: NEEDS CLARIFICATION (suggested: Python 3.11)  
-**Primary Dependencies**: NEEDS CLARIFICATION (suggested: `PyMuPDF` or `pdfminer.six` for PDF extraction; `spaCy` for NLP; `python-markdown` or `markdown-it` for validation; Foam VS Code extension; optional Copilot integration tooling)  
-**Storage**: Filesystem (`/raw`, `/wiki`), optional SQLite index for fast lookups (NEEDS CLARIFICATION)  
-**Testing**: `pytest` (unit + integration) or NEEDS CLARIFICATION  
-**Target Platform**: Local developer environment (macOS/Linux) with VS Code  
-**Project Type**: CLI + VS Code workflows + small service utilities  
-**Performance Goals**: Ingest typical research PDF in < 2 minutes (configurable)  
-**Constraints**: Local-only operation; atomic pages; no hallucinations; strict `YYYYMMDDNN` filenames  
-**Scale/Scope**: Initial target: tens–hundreds of `/raw` artifacts, scale to thousands later with indexing
+**Language/Version**: TypeScript + Node.js (VS Code extension SDK)  
+**Extension Dependencies**: 
+  - `vscode` - VS Code extension API
+  - `@vscode/test-electron` - Extension testing
+  - `@types/vscode` - Type definitions
+  - `pdfjs-dist` - PDF extraction (client-side)
+  - `markdown-it` - Markdown validation
+  - Copilot Chat API integration (via VS Code extension communication)
+**Optional Backend**: Python runtime for advanced PDF extraction (PyMuPDF/pdfplumber) callable from extension  
+**Storage**: Filesystem (`/raw`, `/wiki`); no database needed initially  
+**Testing**: Jest + VS Code Test Runner (extension tests)  
+**Target Platform**: VS Code (macOS/Linux/Windows) with GitHub Copilot extension installed  
+**Project Type**: VS Code extension (single integrated environment)  
+**Copilot Integration**: Direct Copilot Chat API via VS Code extension communication (no separate API key management)  
+**Performance Goals**: Ingest typical research PDF in < 2 minutes (background task)  
+**Constraints**: Local-first; atomic pages; no hallucinations; strict `YYYYMMDDNN` filenames; no Python CLI tools (deprecated)  
+**Scale/Scope**: Initial target: tens–hundreds of `/raw` artifacts; extension architecture scales to thousands with file indexing
 
 ## Constitution Check
 
@@ -35,27 +43,40 @@ specs/001-vscode-native-wiki/
 - plan.md                # This file
 - research.md            # Phase 0 output (create)
 - data-model.md          # Phase 1 output (create)
-- quickstart.md          # Phase 1 output (create)
-- tasks.md               # Phase 2 output (create)
+- quickstart.md          # Phase 2D output (create)
+- tasks.md               # Phase 0–2 output (create)
 
-tools/ingest/
-- ingest.py              # CLI entrypoint for ingestion
-- extract.py             # PDF/text extraction utilities
-- concepts.py            # Candidate concept extraction
-- draft.py               # Draft page generation (Copilot integration)
-- backlink.py            # Backlink insertion & reconciliation
-
-tools/lint/
-- orphan_check.py        # Orphan discovery
-- claim_diff.py          # Claim-diff heuristics
-
-scripts/
-- watch-raw.sh           # File watcher that triggers ingestion
+extension/  (NEW)
+- src/
+  - extension.ts         # Extension activation & command registration
+  - ingest/
+    - ingestCommand.ts   # Ingestion orchestrator
+    - extractor.ts       # PDF/text extraction
+    - conceptExtractor.ts # Concept candidate discovery
+    - draftGenerator.ts   # Draft generation (Copilot Chat integration)
+    - backlinkManager.ts  # Backlink insertion & reconciliation
+  - query/
+    - queryCommand.ts    # Query handler + Decision archiver
+  - lint/
+    - orphanDetector.ts   # Orphan page discovery
+    - claimAnalyzer.ts    # Claim-diff analysis
+    - lintCommand.ts      # Lint orchestrator
+  - models/
+    - WikiPage.ts        # WikiPage type definitions
+    - RawDocument.ts     # RawDocument type definitions
+  - utils/
+    - fileWatcher.ts     # File watcher for /raw changes
+    - formatter.ts       # Page formatting & validation
+- package.json
+- tsconfig.json
+- test/  (Jest)
 
 wiki/
 - decisions/             # Archived decision transcripts
 - index.md
 - glossary.md
+
+(Deprecated) tools/ — Python CLI tools marked as deprecated; maintained for backward compatibility only
 
 ## Complexity Tracking
 
@@ -67,42 +88,68 @@ If any of the following are required, provide a short justification in the plan 
 
 ## Phase 0: Outline & Research (deliver: `research.md`)
 
-1. Research and choose PDF text extraction library: evaluate `PyMuPDF`, `pdfminer.six`, `pdftotext`.  
-2. Research concept extraction approach: headings+section heuristics, NER, topic model or sentence-level keyphrase extraction.  
-3. Determine Copilot integration strategy: manual assisted editing vs. scripted prompts (NEEDS CLARIFICATION: do you have Copilot CLI/automation access?).  
-4. Define page schema validator and `YYYYMMDDNN` sequence generator.  
-5. Produce `research.md` with Decision: chosen libraries, rationale, alternatives.
+Investigate extension architecture, Copilot Chat integration, PDF extraction strategies, and file watcher patterns to inform Phase 1 design.
+
+1. Research VS Code extension architecture: extension activation, command registration, webview integration, file watcher patterns.  
+2. Research Copilot Chat API integration: available VS Code extension APIs for interacting with Copilot Chat (e.g., `vscode.chat.createChatParticipant`, message passing patterns).  
+3. Evaluate client-side PDF extraction: `pdfjs-dist` vs. backend Python service vs. hybrid approach.  
+4. Research NER library options (spaCy, NLTK) for concept extraction candidate generation.  
+5. Define page schema validator and `YYYYMMDDNN` sequence generator for TypeScript context.  
+6. Research file watcher patterns for `/raw` directory change detection.  
+7. Produce `research.md` with Decisions: chosen libraries, NER strategy, Copilot Chat patterns, rationale, alternatives.
 
 ## Phase 1: Design & Contracts (deliver: `data-model.md`, `/contracts`)
 
-1. Define canonical data model: `RawDocument`, `WikiPage`, `Decision`, `Index`, `GlossaryTerm`.  
-2. Define CLI contracts: `ingest add <raw-file>`, `ingest run`, `index rebuild`, `query`, `lint --mode quick|deep`.  
-3. Design page creation flow and reconciliation algorithm (idempotent, safe merges, backlink insertion).  
-4. Define tests and acceptance criteria for each contract.  
-5. Run `.specify/scripts/bash/update-agent-context.sh copilot` (optional; documents this feature to the Copilot agent-scoped context).  
+Define data models, extension commands, Copilot Chat integration patterns, and contracts for Phase 2A–2D implementation.
 
-## Phase 2: Implementation (deliver: code + `quickstart.md` + `tasks.md`)
+1. Define canonical data model: `RawDocument`, `WikiPage`, `Decision`, `Index`, `GlossaryTerm` (TypeScript interfaces).  
+2. Specify NER library choice and concept extraction strategy (library name, thresholds, candidate ranking).  
+3. Define extension commands: 
+   - `personal-wiki.ingest` - Ingest files from `/raw`
+   - `personal-wiki.query` - Query wiki via Copilot Chat
+   - `personal-wiki.lint` - Run linting checks (quick and deep modes)
+   - `personal-wiki.indexRebuild` - Rebuild index/glossary
+4. Design Copilot Chat participant integration: message handling, response formatting, Decision page archival, local embeddings fallback strategy.  
+5. Design page creation flow and reconciliation algorithm (idempotent, safe merges, backlink insertion).  
+6. Design file watcher strategy: debouncing, conflict resolution for simultaneous changes.  
+7. Define tests and acceptance criteria for each command.  
+8. Run `.specify/scripts/bash/update-agent-context.sh copilot` (optional; documents extension to Copilot agent context).  
 
-Sprint A — Minimal Viable Ingest
+## Phase 2A–2D: Implementation (deliver: code + `quickstart.md`)
 
-1. Implement `ingest.py` CLI skeleton and `extract.py` with chosen library.  
-2. Implement `concepts.py` to extract candidate page titles and summaries.  
-3. Implement `draft.py` to generate Markdown page drafts (metadata fields + body), marking unknown assertions as `Needs Source`.  
-4. Implement `backlink.py` to insert `[[WikiLinks]]` and update existing pages idempotently.  
-5. Add unit tests for extraction and page-schema validation.
+**Sprint A — Extension Scaffold & File Operations**
 
-Sprint B — Index, Query, Lint
+1. Create TypeScript extension project with `package.json`, build configuration, test setup.  
+2. Implement extension activation and command registration (`ingest`, `query`, `lint`, `indexRebuild`).  
+3. Implement file watcher for `/raw` directory changes.  
+4. Implement PDF/text extraction (client-side via `pdfjs-dist` or backend Python service).  
+5. Implement `WikiPage` data model and filesystem operations (read/write pages).  
+6. Add unit tests for file operations and page schema validation.
 
-1. Implement `index rebuild` command to update `index.md` and `glossary.md`.  
-2. Implement `query` handler that answers using the wiki and archives conversations as `Decision` pages.  
-3. Implement `lint` `quick` mode (orphan detection) and `deep` mode (claim-diff + source-contrast).  
-4. Add integration tests: place a sample PDF in `/raw` and assert N pages created, backlinks inserted, `index.md` updated, and `Decision` creation for a sample query.
+**Sprint B — Core Workflows (Ingest, Lint, Index)**
 
-Sprint C — Polish & VS Code Integration
+1. Implement `ingestCommand`: orchestrate extraction → concepts → draft → backlinks.  
+2. Implement concept extraction and candidate page discovery.  
+3. Implement page draft generation with `Needs Source` handling.  
+4. Implement backlink insertion and reconciliation (bidirectional updates).  
+5. Implement `lintCommand` with orphan detection and claim-diff analysis.  
+6. Implement `indexRebuild` command to update `index.md` and `glossary.md`.  
+7. Add integration tests: ingest sample PDF, verify pages, backlinks, index updates.
 
-1. Provide `quickstart.md` showing how to run ingestion, view Foam graph, and run linting.  
-2. Add VS Code tasks/commands for `ingest run` and `index rebuild`.  
-3. Add small UX improvements (interactive prompts when ambiguous, preview drafts before commit).  
+**Sprint C — Query & Copilot Chat Integration**
+
+1. Implement Copilot Chat participant integration (message handling, context injection).  
+2. Implement `queryCommand` handler that answers using wiki pages.  
+3. Implement Decision page archival for query conversations.  
+4. Add webview for Decision preview and confirmation UI.  
+5. Add integration tests for query flow and Decision creation.
+
+**Sprint D — Polish & Documentation**
+
+1. Provide `quickstart.md` showing extension installation, usage via command palette, Foam graph visualization.  
+2. Add error handling and user-friendly status messages.  
+3. Add settings UI (optional: PDF extraction backend, performance tuning).  
+4. Verify Foam graph rendering and backlink navigation work correctly.  
 
 ## Acceptance Tests & Criteria Mapping
 
@@ -122,16 +169,21 @@ Sprint C — Polish & VS Code Integration
 
 ## Timeline (rough)
 
-- Phase 0 (Research): 1–3 days  
-- Phase 1 (Design & Contracts): 2–4 days  
-- Phase 2 (Implementation MVP): 1–2 weeks  
+- Phase 0 (Research): 1–2 days  
+- Phase 1 (Design & Contracts): 2–3 days  
+- Phase 2 (Implementation MVP): 2–3 weeks  
+  - Sprint A (Extension scaffold + file ops): 4–5 days  
+  - Sprint B (Core workflows): 5–7 days  
+  - Sprint C (Query + Copilot Chat): 3–5 days  
+  - Sprint D (Polish): 2–3 days  
 
 ## Next Steps (immediate)
 
-1. Confirm language/runtime and Copilot integration approach (manual or automated).  
-2. Run Phase 0 research tasks and create `research.md`.  
-3. After research, produce `data-model.md` and update the plan if any constitution gates require changes.
+1. Generate `tasks.md` from this plan using speckit.tasks workflow.  
+2. Run Phase 0 research and produce `research.md`.  
+3. After research, produce `data-model.md`.  
+4. Begin Phase 2 implementation (Sprint A).  
 
 ---
 
-**Notes**: This plan intentionally marks unknowns as `NEEDS CLARIFICATION`. Provide your preferred language/runtime and whether Copilot automation is available; I will update the plan and generate `research.md` and `data-model.md` next.
+**Status**: Architecture clarified (2026-04-14). Specification finalized. Ready for task generation and implementation planning.

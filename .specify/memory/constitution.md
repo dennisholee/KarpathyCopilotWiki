@@ -40,7 +40,12 @@ Entries MUST be atomic (one concept per file), verifiable, and minimally complet
 
 - **Atomic Notes**: One concept per file. Combine related concepts only when they form a single atomic idea with clear boundaries.
 - **No Hallucinations**: If information is not present in `/raw`, do not invent wiki pages or assert unverified facts. Instead, create a research note that references missing sources and label it `Needs Source`.
-- **Local Only**: Never upload files, push to a remote repository, or publish content externally without explicit approval from project owners.
+- **Local-First with Optional Remote**: By default, all operations (embeddings, search, inference) use local models and compute. Remote services (e.g., GitHub Copilot API) may be used **only** when:
+  1. Explicitly enabled by users via CLI flag (`--use-copilot`) or configuration
+  2. The feature gracefully degrades to local-only if remote service is unavailable
+  3. Users are informed of remote API usage with clear logging
+  4. No sensitive wiki content is sent to remote services without disclosure
+  5. Users maintain control over API credentials (never auto-transmitted)
 
 ## Formatting Standards
 
