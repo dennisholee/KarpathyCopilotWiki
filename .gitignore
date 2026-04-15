@@ -108,6 +108,8 @@ wiki/index.md
 node_modules/
 dist/
 out/
+extension/.tmpdist/
+extension/coverage/
 *.tsbuildinfo
 .vscodeignore
 npm-debug.log

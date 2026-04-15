@@ -79,6 +79,10 @@
           {
             "name": "ingest",
             "description": "Ingest raw documents into the wiki"
+          },
+          {
+            "name": "model",
+            "description": "Propose an OpenMetadata-style model enhancement from grounded wiki evidence"
           }
         ]
       }

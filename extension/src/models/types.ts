@@ -93,6 +93,89 @@ export interface StructuredAnswer {
   confidenceLabel: StructuredAnswerConfidence;
 }
 
+export interface ModelingRequirement {
+  rawRequest: string;
+  normalizedRequest: string;
+  requestedChanges: string[];
+  inferredEntityName: string;
+}
+
+export interface ExistingModelCandidate {
+  pageId: string;
+  title: string;
+  relevanceScore: number;
+  effectiveScore?: number;
+  matchType: 'title' | 'content' | 'semantic';
+  sourceReferences: string[];
+  contentExcerpt: string;
+  plaintext: string;
+}
+
+export interface EvidenceReference {
+  pageId: string;
+  title: string;
+  sourceReferences: string[];
+  statement?: string;
+  usage: string;
+  conflicted: boolean;
+}
+
+export interface ContractAttribute {
+  name: string;
+  description: string;
+  dataType: string;
+  required: boolean;
+  businessRules: string[];
+  validationLogic: string[];
+  sourceReferences: string[];
+  status: 'existing' | 'proposed' | 'assumed' | 'renamed';
+  renameOf?: string;
+}
+
+export interface OpenMetadataModelContract {
+  id: string;
+  name: string;
+  entityName: string;
+  displayName: string;
+  version: string;
+  domain: string;
+  description: string;
+  sourceModel: string;
+  sourceModelId?: string;
+  attributes: ContractAttribute[];
+  tags: string[];
+}
+
+export interface ModelProposal {
+  requirement: ModelingRequirement;
+  baselineModel: ExistingModelCandidate;
+  contract: OpenMetadataModelContract;
+  rationale: string;
+  changeSummary: string[];
+  assumptions: string[];
+  conflicts: string[];
+  evidence: EvidenceReference[];
+}
+
+export interface ModelSelectionResult {
+  requirement: ModelingRequirement;
+  candidates: ExistingModelCandidate[];
+  baselineCandidate?: ExistingModelCandidate;
+  needsRefinement: boolean;
+  refinementReason?: string;
+}
+
+export interface ContractValidationIssue {
+  field: string;
+  message: string;
+  severity: 'error' | 'warning';
+}
+
+export interface ContractValidationResult {
+  isValid: boolean;
+  issues: ContractValidationIssue[];
+}
+
 export interface WikiIndex {
   /** Version of index format (for migration compatibility) */
   version: string;

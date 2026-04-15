@@ -10,6 +10,10 @@ import { PreviousWikiTurn } from '../models/types';
 import { buildDirectAnswerPrompt, buildEffectiveQuery } from '../query/answerPrompt';
 import { IndexBuilder } from '../commands/indexRebuild';
 import { IngestOrchestrator } from '../ingest/ingestCommand';
+import { ModelMatcher } from '../modeling/modelMatcher';
+import { ProposalBuilder } from '../modeling/proposalBuilder';
+import { ContractValidator } from '../modeling/contractValidator';
+import { ProposalFormatter } from '../modeling/proposalFormatter';
 
 export class WikiChatParticipant {
   private searchEngine: SearchEngine;
@@ -17,6 +21,10 @@ export class WikiChatParticipant {
   private logger: Logger;
   private queryHandler: QueryHandler;
   private decisionArchiver: DecisionArchiver;
+  private modelMatcher: ModelMatcher;
+  private proposalBuilder: ProposalBuilder;
+  private contractValidator: ContractValidator;
+  private proposalFormatter: ProposalFormatter;
   private conversationHistory: ConversationEntry[] = [];
   private lastQueryResult: QueryResult | null = null;
 
@@ -26,6 +34,10 @@ export class WikiChatParticipant {
     this.logger = logger;
     this.queryHandler = new QueryHandler(searchEngine, wikiManager, logger);
     this.decisionArchiver = new DecisionArchiver(this.wikiManager.getWikiDir(), logger);
+    this.modelMatcher = new ModelMatcher();
+    this.proposalBuilder = new ProposalBuilder();
+    this.contractValidator = new ContractValidator();
+    this.proposalFormatter = new ProposalFormatter();
   }
 
   /**
@@ -78,6 +90,8 @@ export class WikiChatParticipant {
         return await this.handleRebuild(stream);
       } else if (command === 'ingest') {
         return await this.handleIngest(stream, query);
+      } else if (command === 'model') {
+        return await this.handleModel(query, previousTurn, stream);
       } else if (command === 'ingest-help') {
         // User typed "ingest" without a filename - show help
         this.logger.info('Displaying ingest help');
@@ -119,6 +133,17 @@ export class WikiChatParticipant {
           'Or just ask a question directly and I\'ll search the wiki for relevant pages!'
         );
         return {};
+      } else if (command === 'model-help') {
+        this.logger.info('Displaying model help');
+        stream.markdown(
+          '**Wiki Model Help**\n\n' +
+          'Usage: `@wiki /model [modelling requirement]`\n\n' +
+          '**Examples:**\n' +
+          '- `@wiki /model add risk rating to the portfolio model`\n' +
+          '- `@wiki /model extend the transaction entity with settlement status and validation rules`\n\n' +
+          'This will find the strongest grounded wiki model, propose an OpenMetadata-style contract enhancement, and disclose evidence, assumptions, and conflicts.'
+        );
+        return {};
       }
 
       // Process query (search, query, or default)
@@ -135,6 +160,69 @@ export class WikiChatParticipant {
       stream.markdown('Error processing your request. Please try again.');
       return { errorDetails: { message: String(error) } };
     }
+  }
+
+  private async handleModel(
+    rawRequest: string,
+    previousTurn: PreviousWikiTurn | undefined,
+    stream: vscode.ChatResponseStream
+  ): Promise<vscode.ChatResult> {
+    const trimmedRequest = rawRequest.trim();
+
+    if (!trimmedRequest) {
+      stream.markdown(this.proposalFormatter.formatRefinementGuidance({
+        requirement: this.modelMatcher.buildRequirement(rawRequest),
+        candidates: [],
+        needsRefinement: true,
+        refinementReason: 'A modelling requirement is required before a proposal can be generated.',
+      }));
+      return {};
+    }
+
+    const effectiveRequest = buildEffectiveQuery(trimmedRequest, previousTurn);
+    const queryResult = await this.queryHandler.query(effectiveRequest, {
+      maxResults: 5,
+      useLocalEmbeddings: true,
+      previousTurn,
+    });
+    this.lastQueryResult = queryResult;
+
+    const selection = this.modelMatcher.selectBaseline(trimmedRequest, queryResult);
+    if (selection.baselineCandidate) {
+      const baselinePage = await this.wikiManager.getPage(selection.baselineCandidate.pageId);
+      if (baselinePage) {
+        selection.baselineCandidate = {
+          ...selection.baselineCandidate,
+          contentExcerpt: baselinePage.content,
+          plaintext: baselinePage.content,
+          sourceReferences: baselinePage.sourceReferences || selection.baselineCandidate.sourceReferences,
+        };
+      }
+    }
+
+    let response: string;
+    if (selection.needsRefinement || !selection.baselineCandidate) {
+      response = this.proposalFormatter.formatRefinementGuidance(selection);
+    } else {
+      const proposal = this.proposalBuilder.buildProposal(selection, queryResult);
+      const validation = this.contractValidator.validate(
+        proposal.contract,
+        proposal.rationale,
+        proposal.evidence.length
+      );
+      response = this.proposalFormatter.formatProposal(proposal, validation);
+    }
+
+    stream.markdown(response);
+    this.conversationHistory.push(
+      {
+        speaker: 'assistant',
+        message: response,
+        timestamp: new Date(),
+      }
+    );
+
+    return {};
   }
 
   /**
@@ -386,6 +474,11 @@ export class WikiChatParticipant {
           command: trimmedPrompt ? 'search' : 'search-help',
           query: trimmedPrompt,
         };
+      case 'model':
+        return {
+          command: trimmedPrompt ? 'model' : 'model-help',
+          query: trimmedPrompt,
+        };
       default:
         return this.parseCommand(prompt);
     }
@@ -393,7 +486,7 @@ export class WikiChatParticipant {
 
   /**
    * Parse command from user input
-   * Supports: "/search [query]", "/ingest [file]", "/rebuild", "/query [question]", or plain query
+  * Supports: "/search [query]", "/ingest [file]", "/rebuild", "/query [question]", "/model [requirement]", or plain query
    */
   private parseCommand(prompt: string): { command: string; query: string } {
     let trimmed = prompt.trim();
@@ -454,6 +547,19 @@ export class WikiChatParticipant {
     // Check if it's just "search" with nothing after
     if (lowerTrimmed === 'search') {
       return { command: 'search-help', query: '' };
+    }
+
+    const modelMatch = lowerTrimmed.match(/^model\s+(.*)$/i);
+    if (modelMatch) {
+      const query = modelMatch[1].trim();
+      if (!query) {
+        return { command: 'model-help', query: '' };
+      }
+      return { command: 'model', query };
+    }
+
+    if (lowerTrimmed === 'model') {
+      return { command: 'model-help', query: '' };
     }
 
     // Default: no recognized command, treat as query

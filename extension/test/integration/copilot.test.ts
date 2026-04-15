@@ -515,6 +515,113 @@ This is a test wiki page with searchable content about artificial intelligence.
       expect(effectiveQuery).toContain('what are the portfolio business rules');
       expect(effectiveQuery).toContain('tell me more about the exceptions');
     });
+
+    it('should generate a model proposal from the strongest grounded wiki page', async () => {
+      const portfolioPage = `---
+title: Portfolio Model
+tags:
+  - portfolio
+source: "portfolio-model.md"
+---
+
+# Portfolio Model
+
+- portfolio_id
+- portfolio_name
+- inception_date
+`;
+      fs.writeFileSync(path.join(wikiDir, '20240102_portfolio-model.md'), portfolioPage);
+
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'add risk rating and review date to the portfolio model', command: 'model' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('## Model Proposal');
+      expect(output).toContain('### Preferred Baseline Model');
+      expect(output).toContain('Portfolio Model');
+      expect(output).toContain('portfolio_id');
+      expect(output).toContain('risk_rating');
+      expect(output).toContain('review_date');
+      expect(output).toContain('### Proposed Contract');
+      expect(output).toContain("sourceModel: 'Portfolio Model'");
+    });
+
+    it('should ask for refinement when no grounded model match is credible', async () => {
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'zqxjv fracture taxonomy delta', command: 'model' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('## Refinement Needed');
+      expect(output).toContain('Try narrowing the request');
+    });
+
+    it('should disclose conflicts and assumptions when evidence is incomplete or contradictory', async () => {
+      const conflictPageA = `---
+title: Transaction Model Optional Settlement
+tags:
+  - transaction
+source: "transaction-optional.md"
+---
+
+# Transaction Model Optional Settlement
+
+- transaction_id
+- settlement_status
+
+Settlement status is optional before posting.
+`;
+      const conflictPageB = `---
+title: Transaction Model Required Settlement
+tags:
+  - transaction
+source: "transaction-required.md"
+---
+
+# Transaction Model Required Settlement
+
+- transaction_id
+- settlement_status
+
+Settlement status is required before posting.
+`;
+      fs.writeFileSync(path.join(wikiDir, '20240103_transaction-optional.md'), conflictPageA);
+      fs.writeFileSync(path.join(wikiDir, '20240104_transaction-required.md'), conflictPageB);
+
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'add settlement status validation logic to the transaction model', command: 'model' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('### Assumptions / Gaps');
+      expect(output).toContain('### Conflicts');
+      expect(output).toContain('settlement');
+    });
   });
 
   describe('T044-T045: End-to-End Workflow & Foam Compatibility', () => {

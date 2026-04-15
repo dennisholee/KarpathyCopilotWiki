@@ -1,0 +1,109 @@
+id: model-proposal-contract
+name: ProposedModelContract
+description: >-
+  Canonical payload returned by the /model participant for a grounded model-enhancement proposal.
+version: 1.0.0
+entityType: dataModel
+required:
+  - id
+  - name
+  - version
+  - domain
+  - sourceModel
+  - attributes
+  - rationale
+  - evidence
+properties:
+  id:
+    type: string
+    description: Stable identifier for the generated proposal contract.
+  name:
+    type: string
+    description: Proposed model name.
+  version:
+    type: string
+    description: Version of the proposed contract payload.
+  domain:
+    type: string
+    description: Business domain or bounded context for the proposal.
+  sourceModel:
+    type: string
+    description: Selected baseline model identifier or title.
+  rationale:
+    type: string
+    description: Why this proposal and baseline model were chosen.
+  changeSummary:
+    type: array
+    description: Concise summary of changes from the baseline model.
+    items:
+      type: string
+  conflicts:
+    type: array
+    description: Explicit conflict statements when wiki evidence disagrees.
+    items:
+      type: string
+  assumptions:
+    type: array
+    description: Unsupported or inferred statements requiring user review.
+    items:
+      type: string
+  attributes:
+    type: array
+    description: Full resulting contract attribute set.
+    items:
+      type: object
+      required:
+        - name
+        - dataType
+        - required
+        - businessRules
+        - validationLogic
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        dataType:
+          type: string
+        required:
+          type: boolean
+        businessRules:
+          type: array
+          items:
+            type: string
+        validationLogic:
+          type: array
+          items:
+            type: string
+        sourceMappings:
+          type: array
+          items:
+            type: string
+        renameOf:
+          type: string
+          description: Optional source attribute name when the proposal represents a rename.
+  evidence:
+    type: array
+    description: Wiki evidence that supports the proposal.
+    items:
+      type: object
+      required:
+        - wikiPage
+        - usage
+      properties:
+        wikiPage:
+          type: string
+        rawSources:
+          type: array
+          items:
+            type: string
+        usage:
+          type: string
+        conflicted:
+          type: boolean
+complianceChecks:
+  - full resulting contract is present
+  - each attribute contains name, businessRules, and validationLogic
+  - rationale is present
+  - cited wiki evidence is present
+  - conflict statements are present when evidence disagrees
