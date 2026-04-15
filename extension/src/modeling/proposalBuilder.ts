@@ -1,14 +1,160 @@
 import {
+  ContractOwner,
+  ContractResource,
   ContractAttribute,
   EvidenceReference,
   ExistingModelCandidate,
+  GuidelineResolution,
+  IncidentManagementDefinition,
+  ModelDefinitionSummary,
+  PlacementDecision,
   ModelProposal,
   ModelSelectionResult,
   OpenMetadataModelContract,
+  SchemaEntry,
+  TargetEntityReference,
 } from '../models/types';
 import { QueryResult } from '../query/queryCommand';
 
 export class ProposalBuilder {
+  buildDefinitionSummary(selection: ModelSelectionResult, queryResult: QueryResult): ModelDefinitionSummary {
+    const targetModel = selection.baselineCandidate ?? selection.candidates[0];
+    const evidence = this.buildDefinitionEvidence(queryResult, targetModel);
+    const keyEntities = this.extractDefinitionItems(evidence, /(entity|model|record|attribute|field)/i, 4);
+    const keyRelationships = this.extractDefinitionItems(evidence, /(relationship|maps|references|links|association|depends)/i, 4);
+    const assumptions = queryResult.evidenceBundle.coverageGaps.map(
+      (gap) => `${gap.missingTopic}: ${gap.reason}. Follow-up: ${gap.suggestedFollowUp}`
+    );
+    const conflicts = this.buildConflicts(queryResult);
+
+    return {
+      requirement: selection.requirement,
+      targetModel,
+      summary: this.buildDefinitionSummaryText(selection, queryResult, evidence),
+      keyEntities,
+      keyRelationships,
+      rationale: this.buildDefinitionRationale(selection, evidence, conflicts.length),
+      assumptions,
+      conflicts,
+      evidence,
+    };
+  }
+
+  buildDerivedProposal(selection: ModelSelectionResult, queryResult: QueryResult): ModelProposal {
+    const requirement = selection.requirement;
+    const evidence = this.buildDerivedEvidence(queryResult);
+    const targetModelName = requirement.targetModelName || requirement.inferredEntityName;
+    const attributes = this.extractDerivedAttributes(targetModelName, queryResult, evidence);
+    const entityName = this.toAttributeName(targetModelName);
+    const displayName = this.toDisplayName(targetModelName);
+    const guidelineResolution = this.resolveGuidelineResolution(requirement, queryResult);
+    const assumptions = this.buildDerivedAssumptions(attributes, queryResult, displayName);
+    const conflicts = this.buildConflicts(queryResult);
+
+    return {
+      requirement,
+      baselineModel: {
+        pageId: `derived_${entityName}`,
+        title: displayName,
+        relevanceScore: 1,
+        matchType: 'semantic',
+        sourceReferences: Array.from(new Set(evidence.flatMap((item) => item.sourceReferences))),
+        contentExcerpt: `Derived ${displayName} from grounded wiki evidence.`,
+        plaintext: attributes.map((attribute) => attribute.name).join('\n'),
+      },
+      contract: this.buildAlignedContract({
+        requirement,
+        displayName,
+        description: `Grounded derived proposal for ${displayName} assembled from wiki evidence and guideline context.`,
+        attributes,
+        evidence,
+        guidelineResolution,
+        sourceModel: 'Derived from grounded wiki evidence',
+        sourceModelId: undefined,
+        tags: ['proposal', 'openmetadata', 'wiki-grounded', 'derived'],
+      }),
+      guidelineResolution,
+      rationale: this.buildDerivedRationale(displayName, evidence, conflicts.length),
+      changeSummary: [
+        `Derive a new ${entityName} contract from grounded wiki evidence instead of enhancing an existing baseline model.`,
+      ],
+      assumptions,
+      conflicts,
+      evidence,
+    };
+  }
+
+  private buildDefinitionEvidence(
+    queryResult: QueryResult,
+    targetModel?: ExistingModelCandidate
+  ): EvidenceReference[] {
+    const pageEvidence = queryResult.evidenceBundle.supportingPages.map((page) => ({
+      pageId: page.pageId,
+      title: page.title,
+      sourceReferences: page.sourceReferences,
+      usage: page.pageId === targetModel?.pageId
+        ? 'Primary grounded page used to explain the requested model definition.'
+        : 'Supporting wiki page used to explain the requested model definition.',
+      conflicted: false,
+    }));
+    const factEvidence = queryResult.evidenceBundle.supportingFacts.map((fact) => ({
+      pageId: fact.pageId,
+      title: fact.title,
+      sourceReferences: fact.sourceReferences,
+      statement: fact.statement,
+      usage: fact.statement,
+      conflicted: false,
+    }));
+
+    return [...pageEvidence, ...factEvidence];
+  }
+
+  private buildDefinitionSummaryText(
+    selection: ModelSelectionResult,
+    queryResult: QueryResult,
+    evidence: EvidenceReference[]
+  ): string {
+    const targetTitle = selection.baselineCandidate?.title ?? this.toDisplayName(selection.requirement.targetModelName || selection.requirement.inferredEntityName);
+    const factStatements = evidence
+      .map((item) => item.statement)
+      .filter((statement): statement is string => Boolean(statement))
+      .slice(0, 2);
+
+    if (factStatements.length > 0) {
+      return `${targetTitle} is defined in the wiki as follows: ${factStatements.join(' ')}`;
+    }
+
+    return queryResult.answer.directAnswer || `${targetTitle} is described by the grounded wiki evidence returned for this request.`;
+  }
+
+  private buildDefinitionRationale(
+    selection: ModelSelectionResult,
+    evidence: EvidenceReference[],
+    conflictCount: number
+  ): string {
+    const targetTitle = selection.baselineCandidate?.title ?? this.toDisplayName(selection.requirement.targetModelName || selection.requirement.inferredEntityName);
+    const sourceCount = new Set(evidence.flatMap((item) => item.sourceReferences)).size;
+    const conflictSentence = conflictCount > 0
+      ? ` ${conflictCount} conflict${conflictCount === 1 ? '' : 's'} were detected and are disclosed below for review.`
+      : '';
+
+    return `Summarized ${targetTitle} from ${evidence.length} grounded evidence reference${evidence.length === 1 ? '' : 's'} across ${sourceCount} raw source document${sourceCount === 1 ? '' : 's'} without generating a contract.${conflictSentence}`;
+  }
+
+  private extractDefinitionItems(
+    evidence: EvidenceReference[],
+    keywordPattern: RegExp,
+    limit: number
+  ): string[] {
+    const items = evidence
+      .map((item) => item.statement || item.title)
+      .filter((value) => keywordPattern.test(value))
+      .map((value) => value.trim())
+      .slice(0, limit);
+
+    return Array.from(new Set(items));
+  }
+
   buildProposal(selection: ModelSelectionResult, queryResult: QueryResult): ModelProposal {
     if (!selection.baselineCandidate) {
       throw new Error('Cannot build a proposal without a baseline candidate.');
@@ -20,7 +166,9 @@ export class ProposalBuilder {
     const requestedAttributes = selection.requirement.requestedChanges.map((change) =>
       this.createRequestedAttribute(change, selection.baselineCandidate as ExistingModelCandidate, baselineAttributes, evidence)
     );
-    const contract = this.buildContract(selection, baselineAttributes, requestedAttributes, evidence);
+    const guidelineResolution = this.resolveGuidelineResolution(selection.requirement, queryResult);
+    const contract = this.buildContract(selection, baselineAttributes, requestedAttributes, evidence, guidelineResolution);
+    const placementDecisions = this.buildPlacementDecisions(requestedAttributes, baselineAttributes, evidence);
     const changeSummary = selection.requirement.requestedChanges.map((change) =>
       this.buildChangeSummary(change, baselineAttributes)
     );
@@ -30,6 +178,8 @@ export class ProposalBuilder {
       requirement: selection.requirement,
       baselineModel: selection.baselineCandidate,
       contract,
+      guidelineResolution,
+      placementDecisions,
       rationale: this.buildRationale(selection.baselineCandidate, evidence, conflicts.length),
       changeSummary,
       assumptions,
@@ -38,28 +188,379 @@ export class ProposalBuilder {
     };
   }
 
+  private buildAlignedContract(params: {
+    requirement: ModelSelectionResult['requirement'];
+    displayName: string;
+    description: string;
+    attributes: ContractAttribute[];
+    evidence: EvidenceReference[];
+    guidelineResolution: GuidelineResolution;
+    sourceModel?: string;
+    sourceModelId?: string;
+    tags?: string[];
+  }): OpenMetadataModelContract {
+    const entityName = this.toAttributeName(params.requirement.inferredEntityName || params.displayName);
+    const schemaEntries = this.buildSchemaEntries(params.attributes);
+    const targetEntity = this.buildTargetEntity(params.requirement, params.displayName, params.evidence);
+    const owner = this.buildOwner(params.evidence);
+    const resources = this.buildResources(params.evidence);
+    const incidentManagement = this.buildIncidentManagement(params.evidence);
+
+    return {
+      name: entityName,
+      displayName: params.displayName,
+      description: params.description,
+      status: 'Draft',
+      owner,
+      targetEntity,
+      schemaText: this.serializeSchemaText(schemaEntries),
+      resources,
+      incidentManagement,
+      id: `proposal_${entityName}`,
+      entityName,
+      version: '1.0.0-proposal',
+      domain: entityName,
+      guidelineSources: params.guidelineResolution.requestedGuidelines.map((guideline) => guideline.name),
+      fallbackStrategy: params.guidelineResolution.requestedGuidelines.length === 0
+        ? 'Default the full contract shape to OpenMetadata because no named guideline was supplied.'
+        : params.guidelineResolution.appliesDefaultOpenMetadata
+          ? 'Use OpenMetadata defaults for any contract sections not covered by named guideline evidence.'
+          : 'Named guideline evidence fully governs the emitted contract sections.',
+      sourceModel: params.sourceModel,
+      sourceModelId: params.sourceModelId,
+      attributes: params.attributes,
+      tags: params.tags ?? ['proposal', 'openmetadata', 'wiki-grounded'],
+    };
+  }
+
+  private buildSchemaEntries(attributes: ContractAttribute[]): SchemaEntry[] {
+    return attributes.map((attribute) => ({
+      name: attribute.name,
+      dataType: attribute.dataType,
+      description: attribute.description,
+      required: attribute.required,
+      validationRules: Array.from(new Set([...attribute.businessRules, ...attribute.validationLogic])),
+      sourceReferences: attribute.sourceReferences,
+      isAssumed: attribute.status === 'assumed',
+    }));
+  }
+
+  private serializeSchemaText(entries: SchemaEntry[]): string {
+    return [
+      'fields:',
+      ...entries.flatMap((entry) => {
+        const lines = [
+          `  - name: ${entry.name}`,
+          `    dataType: ${entry.dataType}`,
+          `    required: ${entry.required}`,
+        ];
+
+        if (entry.description) {
+          lines.push(`    description: ${entry.description}`);
+        }
+
+        if (entry.validationRules.length > 0) {
+          lines.push('    validationRules:');
+          lines.push(...entry.validationRules.map((rule) => `      - ${rule}`));
+        }
+
+        if (entry.sourceReferences.length > 0) {
+          lines.push('    sourceReferences:');
+          lines.push(...entry.sourceReferences.map((reference) => `      - ${reference}`));
+        }
+
+        if (entry.isAssumed) {
+          lines.push('    assumed: true');
+        }
+
+        return lines;
+      }),
+    ].join('\n');
+  }
+
+  private buildTargetEntity(
+    requirement: ModelSelectionResult['requirement'],
+    displayName: string,
+    evidence: EvidenceReference[]
+  ): TargetEntityReference {
+    const physicalSignals = [
+      requirement.rawRequest,
+      requirement.normalizedRequest,
+      displayName,
+      ...evidence.map((item) => item.statement || item.title),
+    ].join(' ').toLowerCase();
+    const isPhysical = /\btable\b|\bcolumn\b|\bdataset\b|\bschema\b|\bview\b/.test(physicalSignals);
+
+    return {
+      name: this.toDisplayName(requirement.targetModelName || requirement.inferredEntityName || displayName),
+      type: isPhysical ? 'table' : 'modeled-entity',
+      sourceKind: isPhysical ? 'physical' : 'logical',
+    };
+  }
+
+  private buildOwner(evidence: EvidenceReference[]): ContractOwner | null {
+    const ownerEvidence = evidence.find((item) => /\bowner\b|\bteam\b|\bsteward\b/i.test(item.statement || item.title));
+    if (!ownerEvidence) {
+      return null;
+    }
+
+    return {
+      id: this.toAttributeName(ownerEvidence.title),
+      type: /\bteam\b/i.test(ownerEvidence.statement || ownerEvidence.title) ? 'team' : 'organization',
+    };
+  }
+
+  private buildResources(evidence: EvidenceReference[]): ContractResource[] {
+    const resourceEvidence = evidence.filter((item) => /\bassertion\b|\bquality\b|\bsla\b|\bservice level\b/i.test(item.statement || item.title));
+
+    return resourceEvidence.map((item, index) => ({
+      type: /\bsla\b|\bservice level\b/i.test(item.statement || item.title) ? 'sla' : 'assertion',
+      name: `${this.toAttributeName(item.title)}_${index + 1}`,
+      description: item.statement || item.usage,
+      properties: {},
+      sourceReferences: item.sourceReferences,
+      isResolved: item.sourceReferences.length > 0,
+    }));
+  }
+
+  private buildIncidentManagement(evidence: EvidenceReference[]): IncidentManagementDefinition | null {
+    const incidentEvidence = evidence.find((item) => /\bincident\b|\bescalation\b|\bon-call\b|\bseverity\b/i.test(item.statement || item.title));
+
+    if (!incidentEvidence) {
+      return null;
+    }
+
+    return {
+      type: 'documented-process',
+      severity: /severity\s+[0-9]/i.exec(incidentEvidence.statement || '')?.[0],
+      description: incidentEvidence.statement || incidentEvidence.usage,
+      sourceReferences: incidentEvidence.sourceReferences,
+      isResolved: incidentEvidence.sourceReferences.length > 0,
+    };
+  }
+
+  private buildPlacementDecisions(
+    requestedAttributes: ContractAttribute[],
+    baselineAttributes: ContractAttribute[],
+    evidence: EvidenceReference[]
+  ): PlacementDecision[] {
+    return requestedAttributes.map((attribute) => {
+      const action = attribute.renameOf
+        ? 'rename'
+        : baselineAttributes.some((baselineAttribute) => baselineAttribute.name === attribute.name)
+          ? 'refine'
+          : 'add';
+      const targetAnchor = this.determinePlacementAnchor(attribute, baselineAttributes);
+
+      return {
+        attributeName: attribute.name,
+        action,
+        targetAnchor,
+        rationale: this.buildPlacementRationale(attribute, action, targetAnchor, baselineAttributes),
+        supportingSources: this.collectRelevantSourceReferences(attribute.name, evidence),
+      };
+    });
+  }
+
+  private determinePlacementAnchor(attribute: ContractAttribute, baselineAttributes: ContractAttribute[]): string {
+    if (attribute.renameOf) {
+      return attribute.renameOf;
+    }
+
+    const categoryMatchers: Array<{ pattern: RegExp; predicate: (name: string) => boolean }> = [
+      { pattern: /_id$/i, predicate: (name) => /_id$/i.test(name) },
+      { pattern: /date|time/i, predicate: (name) => /date|time/i.test(name) },
+      { pattern: /status|flag/i, predicate: (name) => /status|flag/i.test(name) },
+      { pattern: /number|code|rating|score/i, predicate: (name) => /number|code|rating|score/i.test(name) },
+    ];
+
+    for (const matcher of categoryMatchers) {
+      if (!matcher.pattern.test(attribute.name)) {
+        continue;
+      }
+
+      const matchedAnchor = [...baselineAttributes].reverse().find((baselineAttribute) => matcher.predicate(baselineAttribute.name));
+      if (matchedAnchor) {
+        return matchedAnchor.name;
+      }
+    }
+
+    return baselineAttributes[baselineAttributes.length - 1]?.name ?? 'start_of_model';
+  }
+
+  private buildPlacementRationale(
+    attribute: ContractAttribute,
+    action: PlacementDecision['action'],
+    targetAnchor: string,
+    baselineAttributes: ContractAttribute[]
+  ): string {
+    if (action === 'rename' && attribute.renameOf) {
+      return `Rename ${attribute.renameOf} in place to ${attribute.name} so the baseline semantic slot is preserved.`;
+    }
+
+    if (action === 'refine') {
+      return `Refine the existing ${attribute.name} field directly because the baseline model already contains that attribute.`;
+    }
+
+    const anchorExists = baselineAttributes.some((baselineAttribute) => baselineAttribute.name === targetAnchor);
+    if (!anchorExists) {
+      return `Add ${attribute.name} at the beginning of the model because no stronger baseline anchor was available.`;
+    }
+
+    return `Add ${attribute.name} after ${targetAnchor} because it is the closest grounded baseline field with compatible semantics.`;
+  }
+
+  private buildDerivedEvidence(queryResult: QueryResult): EvidenceReference[] {
+    const pageEvidence = queryResult.evidenceBundle.supportingPages.map((page) => ({
+      pageId: page.pageId,
+      title: page.title,
+      sourceReferences: page.sourceReferences,
+      usage: 'Grounded source used to derive the new model proposal.',
+      conflicted: false,
+    }));
+    const factEvidence = queryResult.evidenceBundle.supportingFacts.map((fact) => ({
+      pageId: fact.pageId,
+      title: fact.title,
+      sourceReferences: fact.sourceReferences,
+      statement: fact.statement,
+      usage: fact.statement,
+      conflicted: false,
+    }));
+    const resultEvidence = queryResult.results
+      .filter((result) => !pageEvidence.some((page) => page.pageId === result.pageId))
+      .map((result) => ({
+        pageId: result.pageId,
+        title: result.title,
+        sourceReferences: result.sourceReferences,
+        statement: result.excerpt,
+        usage: 'Search result context used to derive the new model proposal.',
+        conflicted: false,
+      }));
+
+    return [...pageEvidence, ...factEvidence, ...resultEvidence];
+  }
+
+  private extractDerivedAttributes(
+    targetModelName: string,
+    queryResult: QueryResult,
+    evidence: EvidenceReference[]
+  ): ContractAttribute[] {
+    const displayName = this.toDisplayName(targetModelName);
+    const attributeNames = Array.from(new Set(
+      queryResult.results
+        .flatMap((result) => `${result.plaintext}\n${result.excerpt}`.split(/\n+|\s+-\s+/))
+        .map((line) => line.trim())
+        .filter((line) => this.looksLikeAttributeLine(line, displayName))
+        .map((line) => line.replace(/^[-*]\s+/, '').trim())
+        .map((line) => this.normalizeDerivedAttributeName(this.toAttributeName(line)))
+        .filter((line) => this.looksLikeAttributeName(line))
+        .slice(0, 10)
+    ));
+
+    const fallbackAttributeNames = attributeNames.length > 0
+      ? attributeNames
+      : [`${this.toAttributeName(targetModelName)}_id`, `${this.toAttributeName(targetModelName)}_name`];
+
+    return fallbackAttributeNames.map((name) => {
+      const aliases = [name, name.replace(/_/g, ' '), name.replace(/_/g, '')];
+      const evidenceText = evidence
+        .map((item) => item.statement || item.title)
+        .filter((value) => this.matchesAnyAlias(value, aliases))
+        .join(' ');
+      const sourceReferences = this.collectRelevantSourceReferences(name, evidence);
+      const hasGroundedEvidence = sourceReferences.length > 0 || evidenceText.length > 0;
+
+      return {
+        name,
+        description: `Derived attribute for ${displayName} based on grounded wiki evidence.`,
+        dataType: this.inferDataType(name, evidenceText),
+        required: this.inferRequired(name, evidenceText),
+        businessRules: hasGroundedEvidence
+          ? [`Populate ${name} according to the grounded evidence collected for ${displayName}.`]
+          : [`Assumption: confirm the business rules for ${name} because explicit supporting evidence is limited.`],
+        validationLogic: hasGroundedEvidence
+          ? [`Validate ${name} against the documented constraints surfaced by the evidence bundle.`]
+          : [`Assumption: validation logic for ${name} must be confirmed against additional source material.`],
+        sourceReferences,
+        status: hasGroundedEvidence ? 'proposed' : 'assumed',
+      };
+    });
+  }
+
+  private buildDerivedAssumptions(
+    attributes: ContractAttribute[],
+    queryResult: QueryResult,
+    displayName: string
+  ): string[] {
+    const assumedAttributes = attributes
+      .filter((attribute) => attribute.status === 'assumed')
+      .map((attribute) => `Derived field ${attribute.name} for ${displayName} requires additional confirmation because direct supporting evidence is limited.`);
+
+    const coverageGapAssumptions = queryResult.evidenceBundle.coverageGaps.map(
+      (gap) => `${gap.missingTopic}: ${gap.reason}. Follow-up: ${gap.suggestedFollowUp}`
+    );
+
+    return Array.from(new Set([...assumedAttributes, ...coverageGapAssumptions]));
+  }
+
+  private buildDerivedRationale(displayName: string, evidence: EvidenceReference[], conflictCount: number): string {
+    const sourceCount = new Set(evidence.flatMap((item) => item.sourceReferences)).size;
+    const conflictSentence = conflictCount > 0
+      ? ` ${conflictCount} conflict${conflictCount === 1 ? '' : 's'} were detected and are disclosed below for review.`
+      : '';
+
+    return `Derived ${displayName} from grounded wiki evidence because no existing baseline model was required for this request, using ${evidence.length} evidence reference${evidence.length === 1 ? '' : 's'} across ${sourceCount} raw source document${sourceCount === 1 ? '' : 's'}.${conflictSentence}`;
+  }
+
+  resolveGuidelineResolution(selectionRequirement: ModelSelectionResult['requirement'], queryResult: QueryResult): GuidelineResolution {
+    const requestedGuidelines = selectionRequirement.requestedGuidelines ?? [];
+
+    if (requestedGuidelines.length === 0) {
+      return {
+        requestedGuidelines: [],
+        appliesDefaultOpenMetadata: true,
+        rationale: 'No explicit modelling guideline was named, so the response should default to the OpenMetadata contract shape.',
+      };
+    }
+
+    const evidenceTitles = queryResult.evidenceBundle.supportingPages.map((page) => page.title.toLowerCase());
+    const matchedGuidelines = requestedGuidelines.filter((guideline) =>
+      evidenceTitles.some((title) => title.includes(guideline.normalizedName))
+    );
+    const unmatchedGuidelines = requestedGuidelines.filter((guideline) =>
+      !matchedGuidelines.some((matched) => matched.normalizedName === guideline.normalizedName)
+    );
+
+    return {
+      requestedGuidelines,
+      appliesDefaultOpenMetadata: unmatchedGuidelines.length > 0,
+      rationale: unmatchedGuidelines.length > 0
+        ? `Named guidelines were detected (${requestedGuidelines.map((guideline) => guideline.name).join(', ')}), but unmatched sections should fall back to OpenMetadata until specific guideline evidence is resolved.`
+        : `Named guidelines were detected (${requestedGuidelines.map((guideline) => guideline.name).join(', ')}) and should govern the supported response sections.`,
+    };
+  }
+
   private buildContract(
     selection: ModelSelectionResult,
     baselineAttributes: ContractAttribute[],
     requestedAttributes: ContractAttribute[],
-    evidence: EvidenceReference[]
+    evidence: EvidenceReference[],
+    guidelineResolution: GuidelineResolution
   ): OpenMetadataModelContract {
     const baselineCandidate = selection.baselineCandidate as ExistingModelCandidate;
     const attributes = this.mergeAttributes([...baselineAttributes, ...requestedAttributes]);
 
-    return {
-      id: `proposal_${baselineCandidate.pageId}`,
-      name: baselineCandidate.title,
-      entityName: this.toAttributeName(selection.requirement.inferredEntityName || baselineCandidate.title),
+    return this.buildAlignedContract({
+      requirement: selection.requirement,
       displayName: baselineCandidate.title,
-      version: '1.0.0-proposal',
-      domain: this.inferDomain(selection.requirement, baselineCandidate),
       description: `Grounded proposal for enhancing ${baselineCandidate.title} based on the current modelling request.`,
+      attributes,
+      evidence,
+      guidelineResolution,
       sourceModel: baselineCandidate.title,
       sourceModelId: baselineCandidate.pageId,
-      attributes,
       tags: ['proposal', 'openmetadata', 'wiki-grounded'],
-    };
+    });
   }
 
   private buildEvidence(
@@ -355,12 +856,19 @@ export class ProposalBuilder {
     attributeName: string,
     evidence: EvidenceReference[]
   ): string[] {
-    const aliases = [attributeName, attributeName.replace(/_/g, ' ')];
+    const aliases = [attributeName, attributeName.replace(/_/g, ' '), attributeName.replace(/_/g, '')];
     return Array.from(new Set(
       evidence
         .filter((item) => this.matchesAnyAlias(item.statement || item.title, aliases))
         .flatMap((item) => item.sourceReferences)
     ));
+  }
+
+  private normalizeDerivedAttributeName(attributeName: string): string {
+    return attributeName
+      .replace(/taxid$/i, 'tax_id')
+      .replace(/taxcode$/i, 'tax_code')
+      .replace(/filingstatus$/i, 'filing_status');
   }
 
   private matchesAnyAlias(value: string, aliases: string[]): boolean {
@@ -505,6 +1013,20 @@ export class ProposalBuilder {
       .replace(/[^a-z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '')
       .slice(0, 64) || 'proposed_attribute';
+  }
+
+  private toDisplayName(value: string): string {
+    const acronymTokens = new Set(['cdms', 'oecd']);
+    const normalized = value.trim();
+    const withModelSuffix = /\bmodel\b/i.test(normalized) ? normalized : `${normalized} model`;
+
+    return withModelSuffix
+      .split(/\s+/)
+      .filter((token) => token.length > 0)
+      .map((token) => acronymTokens.has(token.toLowerCase())
+        ? token.toUpperCase()
+        : token.charAt(0).toUpperCase() + token.slice(1))
+      .join(' ');
   }
 
   private isEvidenceConflicted(

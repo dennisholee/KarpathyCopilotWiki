@@ -33,6 +33,12 @@ export class ConceptExtractor {
     'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'same', 'so',
     'than', 'too', 'very', 'just', 'also', 'if', 'else', 'there', 'here',
   ]);
+  private genericStructuralTerms = new Set([
+    'appendix', 'chapter', 'chapters', 'conclusion', 'conclusions', 'content', 'contents',
+    'context', 'contract', 'contracts', 'document', 'documents', 'example', 'examples',
+    'header', 'headers', 'introduction', 'introductions', 'overview', 'overviews',
+    'schema', 'schemas', 'section', 'sections', 'summary', 'summaries', 'table', 'tables',
+  ]);
 
   constructor(logger: Logger) {
     this.logger = logger;
@@ -73,7 +79,9 @@ export class ConceptExtractor {
       const normalized = this.deduplicateAndNormalize(concepts);
 
       // Filter by confidence
-      const filtered = normalized.filter((c) => c.confidence >= opts.minConfidence);
+      const filtered = normalized.filter(
+        (c) => c.confidence >= opts.minConfidence && this.isMeaningfulConcept(c)
+      );
 
       // Sort by confidence descending
       filtered.sort((a, b) => b.confidence - a.confidence);
@@ -243,5 +251,33 @@ export class ConceptExtractor {
       .replace(/[^\w\s]/g, '') // Remove punctuation
       .replace(/\s+/g, ' ') // Normalize whitespace
       .trim();
+  }
+
+  private isMeaningfulConcept(concept: Concept): boolean {
+    const tokens = this.normalizeText(concept.text)
+      .split(' ')
+      .map((token) => token.trim())
+      .filter((token) => token.length > 0);
+
+    if (tokens.length === 0) {
+      return false;
+    }
+
+    if (tokens.every((token) => this.stopwords.has(token))) {
+      return false;
+    }
+
+    if (tokens.every((token) => this.stopwords.has(token) || this.genericStructuralTerms.has(token))) {
+      return false;
+    }
+
+    if (tokens.length === 1) {
+      const [token] = tokens;
+      if (this.stopwords.has(token) || this.genericStructuralTerms.has(token)) {
+        return false;
+      }
+    }
+
+    return true;
   }
 }

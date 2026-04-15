@@ -1,0 +1,50 @@
+id: model-query-definition-summary
+name: ModelDefinitionSummary
+description: >-
+  Canonical response payload shape for informational @wiki /model definition requests.
+version: 1.0.0
+required:
+  - summary
+  - rationale
+  - evidence
+properties:
+  summary:
+    type: string
+    description: Grounded explanation of the target model or relationship.
+  keyEntities:
+    type: array
+    items:
+      type: string
+  keyRelationships:
+    type: array
+    items:
+      type: string
+  rationale:
+    type: string
+  assumptions:
+    type: array
+    items:
+      type: string
+  evidence:
+    type: array
+    items:
+      type: object
+      required:
+        - wikiPage
+        - rawSources
+        - usage
+      properties:
+        wikiPage:
+          type: string
+        rawSources:
+          type: array
+          items:
+            type: string
+        usage:
+          type: string
+        conflicted:
+          type: boolean
+behavioralConstraints:
+  - do not emit contract sections for definition-only requests
+  - include key entities or relationships when the evidence supports them
+  - surface assumptions when the wiki definition is incomplete or ambiguous

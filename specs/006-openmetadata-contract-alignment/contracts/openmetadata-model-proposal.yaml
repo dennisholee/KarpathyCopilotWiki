@@ -1,0 +1,92 @@
+id: openmetadata-aligned-model-proposal
+name: OpenMetadataAlignedModelProposal
+description: >-
+  Canonical proposal contract payload returned by @wiki /model for derive and enhance intents
+  after alignment to the organization's OpenMetadata-style data contract structure.
+version: 1.0.0
+required:
+  - name
+  - displayName
+  - description
+  - status
+  - targetEntity
+  - schemaText
+properties:
+  name:
+    type: string
+    description: Stable contract identifier or slug-safe proposal name.
+  displayName:
+    type: string
+    description: Human-readable proposal title.
+  description:
+    type: string
+    description: Grounded summary of the model being proposed or enhanced.
+  status:
+    type: string
+    description: Proposal lifecycle state, such as Draft.
+  owner:
+    type: object
+    nullable: true
+    description: Present only when grounded evidence identifies an owner.
+    properties:
+      id:
+        type: string
+      type:
+        type: string
+  targetEntity:
+    type: object
+    required:
+      - name
+      - type
+    properties:
+      name:
+        type: string
+      type:
+        type: string
+        description: Logical modeled entity by default, physical type only when grounded, such as modeled-entity or table.
+  schemaText:
+    type: string
+    description: OpenMetadata-style serialized schema definition derived from structured field evidence.
+  resources:
+    type: array
+    description: Optional evidence-backed quality or service-level resources.
+    items:
+      type: object
+      required:
+        - type
+        - name
+        - description
+      properties:
+        type:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        properties:
+          type: object
+          additionalProperties:
+            type: string
+  incidentManagement:
+    type: object
+    nullable: true
+    description: Present only when grounded evidence supports incident-management behavior.
+    properties:
+      type:
+        type: string
+      severity:
+        type: string
+      description:
+        type: string
+behavioralConstraints:
+  - derive and enhance responses must emit this aligned contract shape
+  - define responses must not emit this contract shape
+  - targetEntity defaults to a logical modeled entity when evidence is conceptual or logical
+  - owner, resources, and incidentManagement must be omitted or marked unresolved when evidence is insufficient
+  - schemaText must reflect grounded or explicitly assumed fields only
+reviewExpectations:
+  - evidence and rationale are rendered outside the contract body in markdown review sections
+  - raw-source traceability for grounded proposal content is rendered in the surrounding review sections rather than duplicated inside contract values
+  - guideline precedence or OpenMetadata fallback is explained in the surrounding review sections when relevant
+  - enhancement responses retain baseline and change-summary context outside the contract body
+  - unsupported operational details are surfaced as gaps instead of fabricated values

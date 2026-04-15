@@ -7,6 +7,7 @@ export interface FrontmatterMetadata {
   title?: string;
   aliases?: string[];
   tags?: string[];
+  links?: string[];
   created?: string;
   modified?: string;
   entities?: Array<{ concept: string; confidence: number }>;
@@ -71,7 +72,8 @@ export function parseMarkdownWithFrontmatter(markdown: string): ParsedMarkdown {
 function parseYamlFrontmatter(yaml: string, metadata: FrontmatterMetadata): void {
   const lines = yaml.split('\n');
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
     if (!line.trim() || line.trim().startsWith('#')) {
       continue;
     }
@@ -82,25 +84,108 @@ function parseYamlFrontmatter(yaml: string, metadata: FrontmatterMetadata): void
     }
 
     const key = line.substring(0, colonIndex).trim();
+    const normalizedKey = key === 'Links' ? 'links' : key;
     let value = line.substring(colonIndex + 1).trim();
 
-    // Handle quoted strings
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
+    if (value === '') {
+      const listValues: string[] = [];
+      let nextIndex = index + 1;
+
+      while (nextIndex < lines.length) {
+        const nextLine = lines[nextIndex];
+        const trimmedNextLine = nextLine.trim();
+
+        if (!trimmedNextLine.startsWith('- ')) {
+          break;
+        }
+
+        const listValue = trimmedNextLine.slice(2).trim();
+        listValues.push(stripYamlQuotes(listValue));
+        nextIndex++;
+      }
+
+      if (listValues.length > 0) {
+        (metadata as Record<string, unknown>)[normalizedKey] = listValues;
+        index = nextIndex - 1;
+      }
+      continue;
     }
+
+    const inlineArray = parseInlineYamlArray(value);
+    if (inlineArray) {
+      (metadata as Record<string, unknown>)[normalizedKey] = inlineArray;
+      continue;
+    }
+
+    // Handle quoted strings
+    value = stripYamlQuotes(value);
 
     // Type conversion
     if (value === 'true') {
-      (metadata as Record<string, unknown>)[key] = true;
+      (metadata as Record<string, unknown>)[normalizedKey] = true;
     } else if (value === 'false') {
-      (metadata as Record<string, unknown>)[key] = false;
+      (metadata as Record<string, unknown>)[normalizedKey] = false;
     } else if (!isNaN(Number(value))) {
-      (metadata as Record<string, unknown>)[key] = Number(value);
+      (metadata as Record<string, unknown>)[normalizedKey] = Number(value);
     } else {
-      (metadata as Record<string, unknown>)[key] = value;
+      (metadata as Record<string, unknown>)[normalizedKey] = value;
     }
   }
+}
+
+function parseInlineYamlArray(value: string): string[] | null {
+  const trimmedValue = value.trim();
+  if (!trimmedValue.startsWith('[') || !trimmedValue.endsWith(']')) {
+    return null;
+  }
+
+  const innerValue = trimmedValue.slice(1, -1).trim();
+  if (!innerValue) {
+    return [];
+  }
+
+  const values: string[] = [];
+  let current = '';
+  let activeQuote: '"' | "'" | null = null;
+
+  for (let index = 0; index < innerValue.length; index++) {
+    const character = innerValue[index];
+
+    if ((character === '"' || character === "'") && activeQuote === null) {
+      activeQuote = character;
+      current += character;
+      continue;
+    }
+
+    if (character === activeQuote) {
+      activeQuote = null;
+      current += character;
+      continue;
+    }
+
+    if (character === ',' && activeQuote === null) {
+      values.push(stripYamlQuotes(current.trim()));
+      current = '';
+      continue;
+    }
+
+    current += character;
+  }
+
+  if (current.trim()) {
+    values.push(stripYamlQuotes(current.trim()));
+  }
+
+  return values;
+}
+
+function stripYamlQuotes(value: string): string {
+  if ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))) {
+    return value.slice(1, -1);
+  }
+
+  return value;
 }
 
 /**
@@ -116,7 +201,7 @@ function extractPlaintext(markdown: string): string {
   text = text.replace(/`[^`]+`/g, '');
 
   // Remove markdown links [text](url) -> text
-  text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
 
   // Remove wiki links [[text]] or [[text|label]]
   text = text.replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1');
@@ -178,14 +263,14 @@ export function generateFrontmatter(metadata: FrontmatterMetadata): string {
 
   // Title (always first)
   if (metadata.title) {
-    yaml += `title: "${metadata.title}"\n`;
+    yaml += `title: "${escapeYamlString(metadata.title)}"\n`;
   }
 
   // Aliases (array)
   if (metadata.aliases && metadata.aliases.length > 0) {
     yaml += 'aliases:\n';
     metadata.aliases.forEach((alias) => {
-      yaml += `  - "${alias}"\n`;
+      yaml += `  - "${escapeYamlString(alias)}"\n`;
     });
   }
 
@@ -194,6 +279,13 @@ export function generateFrontmatter(metadata: FrontmatterMetadata): string {
     yaml += 'tags:\n';
     metadata.tags.forEach((tag) => {
       yaml += `  - ${tag}\n`;
+    });
+  }
+
+  if (metadata.links && metadata.links.length > 0) {
+    yaml += 'links:\n';
+    metadata.links.forEach((link) => {
+      yaml += `  - "${escapeYamlString(link)}"\n`;
     });
   }
 
@@ -209,14 +301,14 @@ export function generateFrontmatter(metadata: FrontmatterMetadata): string {
   if (metadata.entities && metadata.entities.length > 0) {
     yaml += 'entities:\n';
     metadata.entities.forEach((entity) => {
-      yaml += `  - concept: "${entity.concept}"\n`;
+      yaml += `  - concept: "${escapeYamlString(entity.concept)}"\n`;
       yaml += `    confidence: ${entity.confidence}\n`;
     });
   }
 
   // Other fields
   if (metadata.source) {
-    yaml += `source: "${metadata.source}"\n`;
+    yaml += `source: "${escapeYamlString(String(metadata.source))}"\n`;
   }
   if (metadata.incomingLinks !== undefined) {
     yaml += `incomingLinks: ${metadata.incomingLinks}\n`;
@@ -227,6 +319,10 @@ export function generateFrontmatter(metadata: FrontmatterMetadata): string {
 
   yaml += '---\n';
   return yaml;
+}
+
+function escapeYamlString(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 /**

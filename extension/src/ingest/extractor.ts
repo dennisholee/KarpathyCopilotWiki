@@ -44,21 +44,114 @@ export class ExtractionService {
       // Route to appropriate extractor
       if (ext === '.pdf') {
         return await this.extractFromPdf(filePath);
+      } else if (ext === '.csv') {
+        return await this.extractFromCsv(filePath);
       } else if (['.txt', '.md', '.markdown'].includes(ext)) {
         return await this.extractFromText(filePath);
-      } else {
-        // Try PDF extraction for unknown types (user might have saved PDF without extension)
+      } else if (!ext) {
+        // Preserve legacy fallback for extensionless files.
         try {
           return await this.extractFromPdf(filePath);
         } catch (e) {
-          // If PDF fails, try as text
           return await this.extractFromText(filePath);
         }
+      } else {
+        throw new Error(`Unsupported file type: ${ext}`);
       }
     } catch (error) {
       this.logger.error(`Text extraction failed for ${filePath}: ${String(error)}`);
       throw error;
     }
+  }
+
+  /**
+   * Extract text from CSV by converting rows into readable key-value lines.
+   */
+  private async extractFromCsv(filePath: string): Promise<ExtractionResult> {
+    try {
+      this.logger.debug(`Extracting from CSV file: ${filePath}`);
+
+      const csvText = fs.readFileSync(filePath, 'utf-8');
+      const rows = csvText
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      if (rows.length === 0) {
+        return {
+          text: '',
+          metadata: {},
+          extractionMethod: 'text',
+          confidence: 1.0,
+        };
+      }
+
+      const headers = this.parseCsvLine(rows[0]);
+      const records = rows.slice(1).map((row, index) => {
+        const values = this.parseCsvLine(row);
+
+        if (headers.length === 0) {
+          return `Row ${index + 1}: ${values.join(', ')}`;
+        }
+
+        return headers
+          .map((header, valueIndex) => {
+            const safeHeader = header || `column_${valueIndex + 1}`;
+            const safeValue = values[valueIndex] || '';
+            return `${safeHeader}: ${safeValue}`;
+          })
+          .join(', ');
+      });
+
+      const text = [
+        headers.length > 0 ? `Columns: ${headers.join(', ')}` : 'Columns: unavailable',
+        ...records,
+      ].join('\n');
+
+      return {
+        text,
+        metadata: {
+          title: path.basename(filePath, path.extname(filePath)).replace(/[-_]/g, ' '),
+        },
+        extractionMethod: 'text',
+        confidence: 1.0,
+      };
+    } catch (error) {
+      this.logger.error(`CSV extraction failed: ${String(error)}`);
+      throw error;
+    }
+  }
+
+  private parseCsvLine(line: string): string[] {
+    const values: string[] = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let index = 0; index < line.length; index++) {
+      const character = line[index];
+      const nextCharacter = line[index + 1];
+
+      if (character === '"') {
+        if (inQuotes && nextCharacter === '"') {
+          current += '"';
+          index++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+
+      if (character === ',' && !inQuotes) {
+        values.push(current.trim());
+        current = '';
+        continue;
+      }
+
+      current += character;
+    }
+
+    values.push(current.trim());
+    return values;
   }
 
   /**

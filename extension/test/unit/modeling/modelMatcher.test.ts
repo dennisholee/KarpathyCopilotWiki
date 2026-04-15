@@ -173,6 +173,69 @@ describe('ModelMatcher', () => {
     expect(requirement.requestedChanges).not.toContain('review date in the portfolio model');
   });
 
+  it('should classify derive, enhance, and define requests deterministically', () => {
+    expect(matcher.buildRequirement('generate the cdms tax model based on the oecd guideline').intent).toBe('derive');
+    expect(matcher.buildRequirement('enhance the party model by adding an account number').intent).toBe('enhance');
+    expect(matcher.buildRequirement('what is the relationship model').intent).toBe('define');
+  });
+
+  it('should extract named modelling guidelines from the request', () => {
+    const requirement = matcher.buildRequirement(
+      'generate the cdms tax model based on the open metadata guideline and the oecd guideline'
+    );
+
+    const guidelineNames = (requirement.requestedGuidelines ?? []).map((guideline) => guideline.normalizedName);
+
+    expect(guidelineNames).toContain('open metadata guideline');
+    expect(guidelineNames).toContain('oecd guideline');
+  });
+
+  it('should extract named modelling guidelines from using-style prompts', () => {
+    const requirement = matcher.buildRequirement(
+      'enhance the party model by adding an account number using the oecd guideline'
+    );
+
+    const guidelineNames = (requirement.requestedGuidelines ?? []).map((guideline) => guideline.normalizedName);
+
+    expect(guidelineNames).toEqual(['oecd guideline']);
+  });
+
+  it('should demote glossary and index pages below domain-specific model pages', () => {
+    const result = matcher.selectBaseline(
+      'add risk rating to the portfolio model',
+      createQueryResult({
+        results: [
+          {
+            pageId: '20240101_glossary',
+            title: 'Glossary',
+            excerpt: 'portfolio model references and definitions',
+            relevanceScore: 0.84,
+            matchType: 'content',
+            sourceReferences: ['/raw/glossary.md'],
+            plaintext: 'Glossary entry for portfolio model',
+          },
+          {
+            pageId: '20240102_portfolio-model',
+            title: 'Portfolio Model',
+            excerpt: '- portfolio_id\n- risk_rating',
+            relevanceScore: 0.58,
+            matchType: 'content',
+            sourceReferences: ['/raw/portfolio.md'],
+            plaintext: 'Portfolio Model\nportfolio_id\nrisk_rating',
+          },
+        ],
+      })
+    );
+
+    expect(result.baselineCandidate?.title).toBe('Portfolio Model');
+  });
+
+  it('should preserve the named target model phrase when present', () => {
+    const requirement = matcher.buildRequirement('what is the relationship model');
+
+    expect(requirement.targetModelName).toBe('relationship');
+  });
+
   it('should rerank candidates using inferred entities that are not in the hardcoded hint list', () => {
     const result = matcher.selectBaseline(
       'Add approval threshold to the suitability model',

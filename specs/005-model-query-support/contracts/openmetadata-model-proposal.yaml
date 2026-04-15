@@ -1,0 +1,131 @@
+id: model-query-openmetadata-proposal
+name: ModelQueryOpenMetadataProposal
+description: >-
+  Canonical contract payload returned by @wiki /model for derive and enhance intents.
+version: 1.0.0
+entityType: dataModel
+required:
+  - id
+  - name
+  - entityName
+  - version
+  - domain
+  - attributes
+  - rationale
+  - evidence
+properties:
+  id:
+    type: string
+  name:
+    type: string
+  entityName:
+    type: string
+  displayName:
+    type: string
+  version:
+    type: string
+  domain:
+    type: string
+  description:
+    type: string
+  sourceModel:
+    type: string
+    description: Optional for derived models, required for enhancements.
+  sourceModelId:
+    type: string
+  rationale:
+    type: string
+  guidelineSources:
+    type: array
+    items:
+      type: string
+  guidelineFallbackSections:
+    type: array
+    items:
+      type: string
+  changeSummary:
+    type: array
+    items:
+      type: string
+  conflicts:
+    type: array
+    items:
+      type: string
+  assumptions:
+    type: array
+    items:
+      type: string
+  placementDecision:
+    type: object
+    properties:
+      targetSection:
+        type: string
+      targetReason:
+        type: string
+      supportingEvidence:
+        type: array
+        items:
+          type: string
+  attributes:
+    type: array
+    items:
+      type: object
+      required:
+        - name
+        - dataType
+        - required
+        - businessRules
+        - validationLogic
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        dataType:
+          type: string
+        required:
+          type: boolean
+        businessRules:
+          type: array
+          items:
+            type: string
+        validationLogic:
+          type: array
+          items:
+            type: string
+        sourceMappings:
+          type: array
+          items:
+            type: string
+        sourceReferences:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+        renameOf:
+          type: string
+  evidence:
+    type: array
+    items:
+      type: object
+      required:
+        - wikiPage
+        - usage
+      properties:
+        wikiPage:
+          type: string
+        rawSources:
+          type: array
+          items:
+            type: string
+        usage:
+          type: string
+        conflicted:
+          type: boolean
+complianceChecks:
+  - derive and enhance responses include a full resulting contract
+  - named guidelines are reflected when supplied
+  - OpenMetadata fallback is declared when guidance is partial or absent
+  - each attribute includes name, businessRules, and validationLogic
+  - evidence is cited for generated structure and placement decisions

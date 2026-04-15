@@ -12,6 +12,7 @@ import { QueryHandler, QueryResult } from '../../src/query/queryCommand';
 import { DecisionArchiver, ConversationEntry } from '../../src/query/decisionArchiver';
 import { WikiChatParticipant } from '../../src/copilot/wiki-participant';
 import { buildEffectiveQuery } from '../../src/query/answerPrompt';
+import { ExtractionService } from '../../src/ingest/extractor';
 
 describe('Copilot Chat Integration Tests', () => {
   let logger: Logger;
@@ -42,6 +43,7 @@ describe('Copilot Chat Integration Tests', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     if (fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true });
     }
@@ -551,8 +553,224 @@ source: "portfolio-model.md"
       expect(output).toContain('portfolio_id');
       expect(output).toContain('risk_rating');
       expect(output).toContain('review_date');
+      expect(output).toContain('### Placement Decisions');
+      expect(output).toContain('risk_rating: add after');
       expect(output).toContain('### Proposed Contract');
-      expect(output).toContain("sourceModel: 'Portfolio Model'");
+      expect(output).toContain("status: 'Draft'");
+      expect(output).toContain('targetEntity:');
+      expect(output).toContain('schemaText: |');
+    });
+
+    it('should show OpenMetadata fallback when a named guideline is not grounded by evidence', async () => {
+      const partyPage = `---
+title: Party Model
+tags:
+  - party
+source: "party.md"
+---
+
+# Party Model
+
+- party_id
+- party_name
+
+Account number identifies the linked account for a party.
+`;
+      fs.writeFileSync(path.join(wikiDir, '20240109_party-model.md'), partyPage);
+
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'enhance the party model by adding an account number using the oecd guideline', command: 'model' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('### Guideline Handling');
+      expect(output).toContain('fall back to OpenMetadata until specific guideline evidence is resolved');
+    });
+
+    it('should enhance the party model by adding an account number', async () => {
+      const partyPage = `---
+title: Party Model
+tags:
+  - party
+source: "party.md"
+---
+
+# Party Model
+
+- party_id
+- party_name
+
+Account number identifies the linked account for a party.
+`;
+      fs.writeFileSync(path.join(wikiDir, '20240110_party-model.md'), partyPage);
+
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'enhance the party model by adding an account number', command: 'model' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('## Model Proposal');
+      expect(output).toContain('### Preferred Baseline Model');
+      expect(output).toContain('Party Model');
+      expect(output).toContain('account_number');
+      expect(output).toContain('### Placement Decisions');
+      expect(output).toContain('account_number: add after');
+      expect(output).toContain('### Proposed Contract');
+      expect(output).toContain('targetEntity:');
+    });
+
+    it('should derive a new model proposal when the request is generation-oriented and no baseline model exists', async () => {
+      const architecturePage = `---
+title: CDMS Architecture
+tags:
+  - architecture
+source: "CDMS_Architecture_Wiki.md"
+---
+
+# CDMS Architecture
+
+- tax_id
+- tax_code
+- filing_status
+
+Tax code identifies the filing class for audit reporting.
+`;
+      const openMetadataPage = `---
+title: Open Metadata Guideline
+tags:
+  - guideline
+source: "guideline_openmetadata.md"
+---
+
+# Open Metadata Guideline
+
+Use stable identifiers and typed attributes in model contracts.
+`;
+      const oecdPage = `---
+title: OECD Guideline
+tags:
+  - guideline
+source: "OECD_Guidance_for_the_Standard_Audit_File_Tax_v2.0.md"
+---
+
+# OECD Guideline
+
+Tax reporting requires filing status and class references.
+`;
+      fs.writeFileSync(path.join(wikiDir, '20240105_cdms-architecture.md'), architecturePage);
+      fs.writeFileSync(path.join(wikiDir, '20240106_openmetadata-guideline.md'), openMetadataPage);
+      fs.writeFileSync(path.join(wikiDir, '20240107_oecd-guideline.md'), oecdPage);
+
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'generate the cdms tax model based on the cdms architecture, open metadata guideline and the oecd guideline', command: 'model' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('## Model Proposal');
+      expect(output).toContain('### Derived Model Context');
+      expect(output).toContain('CDMS Tax Model');
+      expect(output).toContain('tax_id');
+      expect(output).toContain('tax_code');
+      expect(output).toContain('### Guideline Handling');
+      expect(output).toContain('should govern the supported response sections');
+      expect(output).toContain('schemaText: |');
+    });
+
+    it('should default generated contracts to OpenMetadata when no named guideline is supplied', async () => {
+      const partyPage = `---
+title: Party Domain Notes
+tags:
+  - party
+source: "party-domain.md"
+---
+
+# Party Domain Notes
+
+- party_id
+- party_name
+
+Party records identify the managed customer or organization.
+`;
+      fs.writeFileSync(path.join(wikiDir, '20240111_party-domain-notes.md'), partyPage);
+
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'generate the party model', command: 'model' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('## Model Proposal');
+      expect(output).toContain('### Derived Model Context');
+      expect(output).toContain('Party Model');
+      expect(output).toContain('### Guideline Handling');
+      expect(output).toContain('default to the OpenMetadata contract shape');
+      expect(output).toContain('targetEntity:');
+    });
+
+    it('should use a physical targetEntity type only when the request is clearly about a table', async () => {
+      const tablePage = `---
+title: Customer Table Spec
+tags:
+  - data
+source: "customer-table.md"
+---
+
+# Customer Table Spec
+
+- customer_id
+- customer_name
+- status_code
+
+The customer table stores columns for customer onboarding and servicing.
+`;
+      fs.writeFileSync(path.join(wikiDir, '20240112_customer-table-spec.md'), tablePage);
+
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'generate customer table contract', command: 'model' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('targetEntity:');
+      expect(output).toContain("type: 'table'");
     });
 
     it('should ask for refinement when no grounded model match is credible', async () => {
@@ -571,6 +789,60 @@ source: "portfolio-model.md"
       const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
       expect(output).toContain('## Refinement Needed');
       expect(output).toContain('Try narrowing the request');
+    });
+
+    it('should ask for refinement when a definition request does not resolve to a credible scope', async () => {
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'explain the mapping thing', command: 'model' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('## Refinement Needed');
+      expect(output).toContain('Try narrowing the request');
+    });
+
+    it('should return a grounded definition summary for define-style model requests', async () => {
+      const relationshipPage = `---
+title: Relationship Model
+tags:
+  - relationship
+source: "relationship.md"
+---
+
+# Relationship Model
+
+Relationship model links party and account records through role-based associations.
+
+- party_reference
+- account_reference
+`;
+      fs.writeFileSync(path.join(wikiDir, '20240108_relationship-model.md'), relationshipPage);
+
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      await participant.handle(
+        { prompt: 'what is the relationship model', command: 'model' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('## Model Definition');
+      expect(output).toContain('### Key Entities / Relationships');
+      expect(output).toContain('### Raw Source Traceability');
+      expect(output).not.toContain('### Proposed Contract');
     });
 
     it('should disclose conflicts and assumptions when evidence is incomplete or contradictory', async () => {
@@ -621,6 +893,78 @@ Settlement status is required before posting.
       expect(output).toContain('### Assumptions / Gaps');
       expect(output).toContain('### Conflicts');
       expect(output).toContain('settlement');
+    });
+
+    it('should ingest all files from a targeted raw subdirectory', async () => {
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      fs.mkdirSync(path.join(tempDir, 'raw', 'PHASE_1_2'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempDir, 'raw', 'PHASE_1_2', 'subdir-doc.md'),
+        '# Phase 1.2 Summary\nNested raw content for ingest testing.'
+      );
+
+      await participant.handle(
+        { prompt: 'PHASE_1_2', command: 'ingest' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('Folder Ingestion Complete');
+      expect(output).toContain('Source Folder**: PHASE_1_2');
+      expect(output).toContain('Files Matched**: 1');
+
+      const pages = await wikiManager.listPages();
+      expect(
+        pages.some((page) =>
+          (page.sourceReferences || []).includes('/raw/PHASE_1_2/subdir-doc.md')
+        )
+      ).toBe(true);
+    });
+
+    it('should create a page for a targeted file even when concept extraction finds no concepts', async () => {
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      fs.writeFileSync(
+        path.join(tempDir, 'raw', 'OECD_Guidance_for_the_Standard_Audit_File_Tax_v2.0.pdf'),
+        Buffer.from('placeholder pdf bytes')
+      );
+
+      const extractionSpy = jest.spyOn(ExtractionService.prototype, 'extractText').mockResolvedValue({
+        text: 'SAF T OECD guidance xml schema audit file tax compliance reference document',
+        metadata: {
+          title: 'OECD Guidance for the Standard Audit File Tax v2.0',
+        },
+        extractionMethod: 'pdfjs',
+        confidence: 0.2,
+      });
+
+      await participant.handle(
+        { prompt: 'OECD_Guidance_for_the_Standard_Audit_File_Tax_v2.0.pdf', command: 'ingest' } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('Ingestion Complete');
+      expect(output).toContain('Pages Created**: 1');
+      expect(output).not.toContain('No pages were created during ingestion');
+
+      const pages = await wikiManager.listPages();
+      expect(
+        pages.some((page) =>
+          (page.sourceReferences || []).includes('/raw/OECD_Guidance_for_the_Standard_Audit_File_Tax_v2.0.pdf')
+        )
+      ).toBe(true);
     });
   });
 

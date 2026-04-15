@@ -9,6 +9,9 @@ import { Concept } from './conceptExtractor';
 
 export interface DraftOptions {
   sourceFile: string; // path to /raw file
+  sourceReference?: string;
+  groupPath?: string;
+  groupDocuments?: string[];
   concepts: Concept[];
   extractedText: string;
 }
@@ -38,7 +41,8 @@ export class DraftGenerator {
       const summary = this.generateSummary(content, title);
 
       // Generate tags
-      const tags = this.generateTags(concept, options.concepts);
+      const tags = this.generateTags(concept, options.concepts, options.groupPath);
+      const sourceReference = options.sourceReference || options.sourceFile;
 
       // Identify assertions needing sources
       const needsSource = this.hasUnsupportedAssertions(content);
@@ -48,12 +52,19 @@ export class DraftGenerator {
         id: normalizedTitle, // Will be replaced with YYYYMMDDNN filename
         title,
         aliases: [concept.text],
-        content: this.formatContent(content, title, options.sourceFile),
+        content: this.formatContent(
+          content,
+          title,
+          sourceReference,
+          options.groupPath,
+          options.groupDocuments
+        ),
         plaintext: content,
         created: new Date().toISOString(),
         tags,
-        links: [options.sourceFile], // Always cite source
+        links: [sourceReference], // Always cite source
         sourceUri: options.sourceFile,
+        sourceReferences: [sourceReference],
       };
 
       // Mark with quality tracking
@@ -116,6 +127,20 @@ export class DraftGenerator {
       relevant.push(...sentences.slice(0, 3).map((s) => s.trim()));
     }
 
+    if (relevant.length === 0) {
+      const fallbackSnippet = text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .slice(0, 8)
+        .join(' ')
+        .slice(0, 1000);
+
+      if (fallbackSnippet.length > 0) {
+        relevant.push(fallbackSnippet);
+      }
+    }
+
     return relevant.join(' ').slice(0, 1000); // Max 1000 chars content
   }
 
@@ -137,7 +162,7 @@ export class DraftGenerator {
   /**
    * Generate relevant tags
    */
-  private generateTags(concept: Concept, allConcepts: Concept[]): string[] {
+  private generateTags(concept: Concept, allConcepts: Concept[], groupPath?: string): string[] {
     const tags: Set<string> = new Set();
 
     // Add concept as tag
@@ -162,6 +187,11 @@ export class DraftGenerator {
 
     for (const r of related) {
       tags.add(this.categoryizeTag(r.text));
+    }
+
+    if (groupPath) {
+      tags.add('grouped-ingest');
+      tags.add(`group-${this.categoryizeTag(groupPath.replace(/[\\/]+/g, '-'))}`);
     }
 
     return Array.from(tags);
@@ -200,7 +230,19 @@ export class DraftGenerator {
   /**
    * Format content as Markdown with wiki structure
    */
-  private formatContent(content: string, title: string, sourceFile: string): string {
+  private formatContent(
+    content: string,
+    title: string,
+    sourceFile: string,
+    groupPath?: string,
+    groupDocuments: string[] = []
+  ): string {
+    const folderLabel = groupPath ? groupPath : 'raw root';
+    const relatedDocuments = groupDocuments
+      .filter((documentPath) => documentPath !== sourceFile)
+      .map((documentPath) => `- ${documentPath}`)
+      .join('\n');
+
     const markdown = `# ${title}
 
 ## Summary
@@ -208,6 +250,10 @@ ${content.slice(0, 200)}
 
 ## Context
 ${content}
+
+## Group Context
+- Folder group: ${folderLabel}
+${relatedDocuments ? `- Related raw sources in this group:\n${relatedDocuments}` : '- Related raw sources in this group: none'}
 
 ## Sources
 - [\`${sourceFile}\`](${sourceFile})

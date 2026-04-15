@@ -1,0 +1,16 @@
+src/**
+test/**
+tests/**
+coverage/**
+node_modules/**
+
+.eslintrc.json
+.jest-aligned-report.json
+demo.ts
+e2e-validation.ts
+esbuild.js
+jest.config.js
+package-lock.json
+tsconfig.json
+
+*.vsix

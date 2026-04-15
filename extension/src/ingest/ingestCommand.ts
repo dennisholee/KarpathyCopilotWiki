@@ -10,13 +10,17 @@ import { Logger } from '../utils/logger';
 import { ErrorHandler } from '../utils/error-handler';
 import { WikiPage } from '../models/types';
 import { ExtractionService } from './extractor';
-import { ConceptExtractor } from './conceptExtractor';
+import { Concept, ConceptExtractor } from './conceptExtractor';
 import { DraftGenerator } from './draftGenerator';
 import { BacklinkManager } from './backlinkManager';
 import { FilenameGenerator } from '../utils/filenameGenerator';
+import { FrontmatterMetadata, generateFrontmatter, slugify } from '../utils/markdown-parser';
 
 export interface IngestOptions {
   sourceFile: string; // Path in /raw
+  sourceReference?: string;
+  groupPath?: string;
+  groupDocuments?: string[];
   skipBacklinks?: boolean;
   maxPages?: number; // Max drafts to generate
 }
@@ -24,6 +28,7 @@ export interface IngestOptions {
 export interface IngestResult {
   sourceFile: string;
   pagesCreated: string[]; // Filenames of created pages
+  pagesUpdated: string[];
   failedPages: string[];
   backlinksInserted: number;
   duration: number; // milliseconds
@@ -78,6 +83,7 @@ export class IngestOrchestrator {
     const result: IngestResult = {
       sourceFile: options.sourceFile,
       pagesCreated: [],
+      pagesUpdated: [],
       failedPages: [],
       backlinksInserted: 0,
       duration: 0,
@@ -114,6 +120,14 @@ export class IngestOrchestrator {
         minConfidence: 0.6,
       });
 
+      if (concepts.length === 0 && extraction.text.trim().length > 0) {
+        const fallbackConcept = this.buildFallbackConcept(options, extraction.metadata?.title);
+        concepts.push(fallbackConcept);
+        this.logger.info(
+          `No concepts extracted; using fallback concept "${fallbackConcept.text}" for targeted ingest`
+        );
+      }
+
       this.logger.debug(`Extracted ${concepts.length} concepts`);
 
       if (concepts.length === 0) {
@@ -127,46 +141,56 @@ export class IngestOrchestrator {
       this.reportProgress(`📝 Generating wiki pages...`, 20);
       const draftOptions = {
         sourceFile: options.sourceFile,
+        sourceReference: options.sourceReference,
+        groupPath: options.groupPath,
+        groupDocuments: options.groupDocuments,
         concepts,
         extractedText: extraction.text,
       };
 
       const totalSteps = concepts.length;
+      const deterministicNameCounts = new Map<string, number>();
       for (let i = 0; i < concepts.length; i++) {
         const concept = concepts[i];
         try {
           // Generate draft
           const draft = this.draftGenerator.generateDraft(concept, draftOptions);
 
+          const filename = this.buildOutputFilename(options, draft, deterministicNameCounts);
+          const filePath = path.join(this.wikiDir, filename);
+          const fileAlreadyExists = fs.existsSync(filePath);
+
           // Find related pages
-          const relatedTitles = this.backlinkManager.findRelatedPages(draft.title);
-
-          // Insert backlinks
-          if (!options.skipBacklinks && relatedTitles.length > 0) {
-            const linkResult = await this.backlinkManager.insertBacklinks(
-              draft,
-              relatedTitles,
-              this.filenameGenerator.generateFilename()
-            );
-            result.backlinksInserted += linkResult.linksAdded.length;
-          }
-
-          // Generate filename
-          const filename = this.filenameGenerator.generateFilename();
+          const relatedTitles = this.backlinkManager.findRelatedPages(draft.title, filename);
 
           // Ensure page has valid filename and schema
           (draft as any).filename = filename;
 
           // Write page to disk (with error handling)
-          const filePath = path.join(this.wikiDir, filename);
           const pageContent = this.formatPageAsMarkdown(draft);
 
           try {
             fs.writeFileSync(filePath, pageContent, 'utf-8');
-            result.pagesCreated.push(filename);
+
+            if (fileAlreadyExists) {
+              result.pagesUpdated.push(filename);
+            } else {
+              result.pagesCreated.push(filename);
+            }
+
+            // Insert backlinks after the source file exists on disk.
+            if (!options.skipBacklinks && relatedTitles.length > 0) {
+              const linkResult = await this.backlinkManager.insertBacklinks(
+                draft,
+                relatedTitles,
+                filename
+              );
+              result.backlinksInserted += linkResult.linksAdded.length;
+            }
+
             const progressPct = Math.round(((i + 1) / totalSteps) * 40); // 40% for page generation
             this.reportProgress(
-              `📝 Created page ${i + 1}/${totalSteps}: ${draft.title}`,
+              `📝 Wrote page ${i + 1}/${totalSteps}: ${draft.title}`,
               progressPct
             );
           } catch (writeError) {
@@ -193,13 +217,14 @@ export class IngestOrchestrator {
 
       result.duration = Date.now() - startTime;
       this.reportProgress(
-        `✅ Ingest complete: ${result.pagesCreated.length}/${totalSteps} pages, ` +
+        `✅ Ingest complete: ${result.pagesCreated.length} created, ${result.pagesUpdated.length} updated, ` +
         `${result.backlinksInserted} backlinks (${result.duration}ms)`,
         20
       );
 
       this.logger.info(
         `Ingest completed: ${result.pagesCreated.length} pages created, ` +
+        `${result.pagesUpdated.length} pages updated, ` +
         `${result.failedPages.length} failed, ` +
         `${result.backlinksInserted} backlinks inserted (${result.duration}ms)`
       );
@@ -221,22 +246,59 @@ export class IngestOrchestrator {
    * Format WikiPage as Markdown with frontmatter
    */
   private formatPageAsMarkdown(page: WikiPage): string {
-    const frontmatter = `---
-title: ${page.title}
-created: ${page.created}
-tags: [${page.tags.map((t) => `"${t}"`).join(', ')}]
----
+    const sourceLinks =
+      page.sourceReferences && page.sourceReferences.length > 0 ? page.sourceReferences : page.links;
+    const frontmatter: FrontmatterMetadata = {
+      title: page.title,
+      aliases: page.aliases,
+      tags: page.tags,
+      links: sourceLinks,
+      created: page.created,
+      source: sourceLinks[0],
+    };
 
-`;
+    return generateFrontmatter(frontmatter) + '\n' + page.content;
+  }
 
-    // Use existing formatted content or generate from scratch
-    let content = page.content;
-
-    // Ensure links section exists
-    if (!content.includes('Links:')) {
-      content += `\n\n## Links\n${page.links.map((l) => `- ${l}`).join('\n')}`;
+  private buildOutputFilename(
+    options: IngestOptions,
+    page: WikiPage,
+    deterministicNameCounts: Map<string, number>
+  ): string {
+    if (!options.sourceReference) {
+      return this.filenameGenerator.generateFilename();
     }
 
-    return frontmatter + content;
+    const stableBase = this.buildStableBaseName(options.sourceReference, page.id || page.title);
+    const occurrence = (deterministicNameCounts.get(stableBase) || 0) + 1;
+    deterministicNameCounts.set(stableBase, occurrence);
+
+    return occurrence === 1 ? `${stableBase}.md` : `${stableBase}-${occurrence}.md`;
+  }
+
+  private buildStableBaseName(sourceReference: string, pageId: string): string {
+    const normalizedSource = sourceReference.replace(/^\/raw\//, '').replace(/\\/g, '/');
+    const sourceWithoutExtension = this.stripTrailingExtension(normalizedSource);
+    return slugify(`${sourceWithoutExtension.replace(/\//g, '-')}-${pageId}`);
+  }
+
+  private buildFallbackConcept(options: IngestOptions, extractionTitle?: string): Concept {
+    const preferredTitle = extractionTitle?.trim() || path.basename(options.sourceFile, path.extname(options.sourceFile));
+    const normalizedTitle = preferredTitle
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return {
+      text: normalizedTitle || 'document summary',
+      type: 'heading',
+      confidence: 0.95,
+      context: options.sourceReference || options.sourceFile,
+    };
+  }
+
+  private stripTrailingExtension(filePath: string): string {
+    const extension = path.posix.extname(filePath);
+    return extension ? filePath.slice(0, -extension.length) : filePath;
   }
 }

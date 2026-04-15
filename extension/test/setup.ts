@@ -27,12 +27,17 @@ jest.mock('vscode', () => ({
   },
   window: {
     showErrorMessage: jest.fn(),
+    showWarningMessage: jest.fn(),
     showInformationMessage: jest.fn(),
+    withProgress: jest.fn(async (_options, task) => task({ report: jest.fn() })),
     createOutputChannel: jest.fn(() => ({
       appendLine: jest.fn(),
       show: jest.fn(),
       dispose: jest.fn(),
     })),
+  },
+  ProgressLocation: {
+    Notification: 15,
   },
   Uri: {
     file: jest.fn((path) => ({ fsPath: path })),

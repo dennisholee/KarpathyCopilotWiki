@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { Logger } from '../utils/logger';
 import { WikiPage } from '../models/types';
+import { ExtractionService } from '../ingest/extractor';
 import {
   parseMarkdownWithFrontmatter,
   extractWikilinks,
@@ -12,16 +13,37 @@ import {
   FrontmatterMetadata,
 } from '../utils/markdown-parser';
 
+export interface RawFileResolutionResult {
+  status: 'resolved' | 'ambiguous' | 'not-found';
+  absolutePath?: string;
+  matches?: string[];
+}
+
+export interface RawIngestFailure {
+  relativePath: string;
+  reason: string;
+}
+
+export interface RawDirectoryResolutionResult {
+  status: 'resolved' | 'ambiguous' | 'not-found';
+  absolutePath?: string;
+  relativePath?: string;
+  matches?: string[];
+  files?: string[];
+}
+
 export class WikiManager {
   private workspacePath: string;
   private logger: Logger;
   private fileWatcher: vscode.FileSystemWatcher | null = null;
+  private extractionService: ExtractionService;
   private rawDir: string;
   private wikiDir: string;
 
   constructor(workspacePath: string, logger: Logger) {
     this.workspacePath = workspacePath;
     this.logger = logger;
+    this.extractionService = new ExtractionService(logger);
     this.rawDir = path.join(workspacePath, 'raw');
     this.wikiDir = path.join(workspacePath, 'wiki');
 
@@ -69,57 +91,89 @@ export class WikiManager {
     }
   }
 
-  async ingestFromRaw(): Promise<{ created: number; updated: number }> {
+  async ingestFromRaw(targetRelativePath?: string): Promise<{ created: number; updated: number; failures: RawIngestFailure[] }> {
     try {
-      this.logger.info('Starting ingest from /raw');
+      this.logger.info(
+        targetRelativePath
+          ? `Starting ingest from /raw/${targetRelativePath}`
+          : 'Starting ingest from /raw'
+      );
 
-      const files = fs.readdirSync(this.rawDir).filter((f) => !f.startsWith('.'));
-      this.logger.info(`Found ${files.length} files in /raw`);
+      const files = this.listRawFilesWithMetadata(targetRelativePath);
+      this.logger.info(
+        targetRelativePath
+          ? `Found ${files.length} files in /raw/${targetRelativePath}`
+          : `Found ${files.length} files in /raw`
+      );
+
+      const groupMap = new Map<string, string[]>();
+      for (const file of files) {
+        const groupKey = file.groupPath;
+        const existing = groupMap.get(groupKey) || [];
+        existing.push(file.relativePath);
+        groupMap.set(groupKey, existing);
+      }
 
       let createdCount = 0;
       let updatedCount = 0;
+      const failures: RawIngestFailure[] = [];
 
       for (const file of files) {
         try {
-          if (!file.endsWith('.txt') && !file.endsWith('.md')) {
-            this.logger.debug(`Skipping non-text file: ${file}`);
-            continue;
-          }
-
-          const filePath = path.join(this.rawDir, file);
-          const content = fs.readFileSync(filePath, 'utf-8');
+          const extraction = await this.extractionService.extractText(file.absolutePath);
+          const normalizedSource = this.normalizeSourceReference(file.relativePath);
+          const groupedSources = (groupMap.get(file.groupPath) || []).map((relativePath) =>
+            this.normalizeSourceReference(relativePath)
+          );
+          const content = this.buildGroupedIngestContent(
+            extraction.text,
+            normalizedSource,
+            file.groupPath,
+            groupedSources
+          );
 
           // Simple ingestion: create one page per raw file
           // In production, might split into multiple pages
           const title =
-            extractFirstHeading(content) ||
-            file.replace(/\.(txt|md)$/, '').replace(/[-_]/g, ' ');
+            extraction.metadata?.title ||
+            extractFirstHeading(extraction.text) ||
+            path.basename(file.relativePath, path.extname(file.relativePath)).replace(/[-_]/g, ' ');
 
-          const slug = slugify(title);
-          const existingPage = await this.getPage(slug);
+          const pageId = this.buildPageIdFromRawRelativePath(file.relativePath);
+          const existingPage = await this.getPage(pageId);
+          const tags = this.buildIngestTags(file.groupPath, file.relativePath);
 
           if (existingPage) {
-            await this.updatePage(slug, {
+            await this.updatePage(pageId, {
               content,
+              tags,
+              sourceReferences: [normalizedSource],
               modified: new Date().toISOString(),
             });
             updatedCount++;
-            this.logger.debug(`Updated page from: ${file}`);
+            this.logger.debug(`Updated page from: ${file.relativePath}`);
           } else {
             await this.createPage(title, content, {
-              source: file,
-              tags: ['ingested'],
-            });
+              source: file.relativePath,
+              group: file.groupPath || 'raw-root',
+              links: [normalizedSource],
+              tags,
+            }, pageId);
             createdCount++;
-            this.logger.debug(`Created page from: ${file}`);
+            this.logger.debug(`Created page from: ${file.relativePath}`);
           }
         } catch (fileError) {
-          this.logger.error(`Failed to ingest ${file}: ${String(fileError)}`);
+          const reason = fileError instanceof Error ? fileError.message : String(fileError);
+          this.logger.error(`Failed to ingest ${file.relativePath}: ${reason}`);
+          failures.push({
+            relativePath: file.relativePath,
+            reason,
+          });
         }
       }
 
       this.logger.info(`Ingest completed: ${createdCount} created, ${updatedCount} updated`);
-      return { created: createdCount, updated: updatedCount };
+      return { created: createdCount, updated: updatedCount, failures };
     } catch (error) {
       this.logger.error(`Ingest failed: ${String(error)}`);
       throw error;
@@ -224,11 +278,143 @@ export class WikiManager {
     return page.sourceReferences || [];
   }
 
+  listRawFiles(): string[] {
+    return this.listRawFilesWithMetadata().map((file) => file.relativePath);
+  }
+
+  resolveRawFileTarget(targetPath: string): RawFileResolutionResult {
+    const normalizedTarget = targetPath
+      .replace(/^\/+/, '')
+      .replace(/^raw\//, '')
+      .replace(/\\/g, '/');
+
+    const absolutePath = path.resolve(this.rawDir, normalizedTarget);
+    const rawRoot = path.resolve(this.rawDir);
+
+    if ((absolutePath === rawRoot || absolutePath.startsWith(`${rawRoot}${path.sep}`)) &&
+        fs.existsSync(absolutePath) &&
+        fs.statSync(absolutePath).isFile()) {
+      return {
+        status: 'resolved',
+        absolutePath,
+        matches: [this.toRawRelativePath(absolutePath)],
+      };
+    }
+
+    const matches = this.listRawFilesWithMetadata().filter(
+      (file) =>
+        file.relativePath === normalizedTarget ||
+        path.basename(file.relativePath) === normalizedTarget
+    );
+
+    if (matches.length === 1) {
+      return {
+        status: 'resolved',
+        absolutePath: matches[0].absolutePath,
+        matches: [matches[0].relativePath],
+      };
+    }
+
+    if (matches.length > 1) {
+      return {
+        status: 'ambiguous',
+        matches: matches.map((match) => match.relativePath),
+      };
+    }
+
+    return {
+      status: 'not-found',
+      matches: [],
+    };
+  }
+
+  resolveRawFile(targetPath: string): string | null {
+    const resolution = this.resolveRawFileTarget(targetPath);
+    return resolution.status === 'resolved' ? resolution.absolutePath || null : null;
+  }
+
+  resolveRawDirectoryTarget(targetPath: string): RawDirectoryResolutionResult {
+    const normalizedTarget = targetPath
+      .replace(/^\/+/, '')
+      .replace(/^raw\//, '')
+      .replace(/\\/g, '/');
+
+    const absolutePath = path.resolve(this.rawDir, normalizedTarget);
+    const rawRoot = path.resolve(this.rawDir);
+
+    if ((absolutePath === rawRoot || absolutePath.startsWith(`${rawRoot}${path.sep}`)) &&
+        fs.existsSync(absolutePath) &&
+        fs.statSync(absolutePath).isDirectory()) {
+      const relativePath = path.relative(this.rawDir, absolutePath).split(path.sep).join('/');
+      return {
+        status: 'resolved',
+        absolutePath,
+        relativePath,
+        matches: [relativePath || '.'],
+        files: this.listRawFilesWithMetadata(relativePath).map((file) => file.relativePath),
+      };
+    }
+
+    const groupMatches = Array.from(
+      new Set(
+        this.listRawFilesWithMetadata()
+          .map((file) => file.groupPath)
+          .filter((groupPath) => groupPath.length > 0)
+      )
+    ).filter(
+      (groupPath) =>
+        groupPath === normalizedTarget ||
+        path.posix.basename(groupPath) === normalizedTarget
+    );
+
+    if (groupMatches.length === 1) {
+      const matchedGroup = groupMatches[0];
+      return {
+        status: 'resolved',
+        absolutePath: path.join(this.rawDir, matchedGroup),
+        relativePath: matchedGroup,
+        matches: [matchedGroup],
+        files: this.listRawFilesWithMetadata(matchedGroup).map((file) => file.relativePath),
+      };
+    }
+
+    if (groupMatches.length > 1) {
+      return {
+        status: 'ambiguous',
+        matches: groupMatches,
+        files: [],
+      };
+    }
+
+    return {
+      status: 'not-found',
+      matches: [],
+      files: [],
+    };
+  }
+
+  toRawRelativePath(filePath: string): string {
+    return path.relative(this.rawDir, filePath).split(path.sep).join('/');
+  }
+
+  getRawGroup(relativePath: string): string {
+    const groupPath = path.posix.dirname(relativePath.replace(/\\/g, '/'));
+    return groupPath === '.' ? '' : groupPath;
+  }
+
   private extractSourceReferences(
     metadata: FrontmatterMetadata,
     content: string
   ): string[] {
     const references = new Set<string>();
+
+    if (Array.isArray(metadata.links)) {
+      for (const link of metadata.links) {
+        if (typeof link === 'string' && link.trim().length > 0) {
+          references.add(this.normalizeSourceReference(link));
+        }
+      }
+    }
 
     if (typeof metadata.source === 'string' && metadata.source.trim().length > 0) {
       references.add(this.normalizeSourceReference(metadata.source));
@@ -243,11 +429,141 @@ export class WikiManager {
   }
 
   private normalizeSourceReference(source: string): string {
-    if (source.startsWith('/raw/')) {
-      return source;
+    const normalizedInput = source.startsWith('/raw/')
+      ? source
+      : `/raw/${source.replace(/^\/+/, '').replace(/\\/g, '/')}`;
+
+    const canonicalRelativePath = this.resolveCanonicalRawRelativePath(
+      normalizedInput.replace(/^\/raw\//, '')
+    );
+
+    return canonicalRelativePath ? `/raw/${canonicalRelativePath}` : normalizedInput;
+  }
+
+  private resolveCanonicalRawRelativePath(relativePath: string): string | null {
+    const normalizedPath = relativePath.replace(/^\/+/, '').replace(/\\/g, '/');
+    if (!normalizedPath) {
+      return null;
     }
 
-    return `/raw/${source.replace(/^\/+/, '')}`;
+    const segments = normalizedPath.split('/').filter((segment) => segment.length > 0);
+    let currentDir = this.rawDir;
+    const canonicalSegments: string[] = [];
+
+    for (const segment of segments) {
+      if (!fs.existsSync(currentDir) || !fs.statSync(currentDir).isDirectory()) {
+        return null;
+      }
+
+      const matchingEntry = fs.readdirSync(currentDir).find(
+        (entryName) => entryName.localeCompare(segment, undefined, { sensitivity: 'accent' }) === 0
+      );
+
+      if (!matchingEntry) {
+        return null;
+      }
+
+      canonicalSegments.push(matchingEntry);
+      currentDir = path.join(currentDir, matchingEntry);
+    }
+
+    return canonicalSegments.join('/');
+  }
+
+  private listRawFilesWithMetadata(targetRelativePath?: string): Array<{
+    absolutePath: string;
+    relativePath: string;
+    groupPath: string;
+  }> {
+    const discovered: Array<{ absolutePath: string; relativePath: string; groupPath: string }> = [];
+    const pendingDirs = [this.rawDir];
+
+    while (pendingDirs.length > 0) {
+      const currentDir = pendingDirs.pop();
+      if (!currentDir) {
+        continue;
+      }
+
+      const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) {
+          continue;
+        }
+
+        const absolutePath = path.join(currentDir, entry.name);
+        if (entry.isDirectory()) {
+          pendingDirs.push(absolutePath);
+          continue;
+        }
+
+        const relativePath = path.relative(this.rawDir, absolutePath).split(path.sep).join('/');
+        discovered.push({
+          absolutePath,
+          relativePath,
+          groupPath: this.getRawGroup(relativePath),
+        });
+      }
+    }
+
+    const normalizedTarget = targetRelativePath
+      ? targetRelativePath.replace(/^\/+/, '').replace(/\\/g, '/').replace(/\/$/, '')
+      : '';
+
+    return discovered
+      .filter((file) => {
+        if (!normalizedTarget) {
+          return true;
+        }
+
+        return (
+          file.relativePath === normalizedTarget ||
+          file.relativePath.startsWith(`${normalizedTarget}/`)
+        );
+      })
+      .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  }
+
+  private buildIngestTags(groupPath: string, relativePath: string): string[] {
+    const tags = ['ingested'];
+    const extension = path.extname(relativePath).replace(/^\./, '').toLowerCase();
+
+    if (extension) {
+      tags.push(`source-${extension}`);
+    }
+
+    if (groupPath) {
+      tags.push('grouped-ingest');
+      tags.push(`group-${slugify(groupPath.replace(/\//g, '-'))}`);
+    } else {
+      tags.push('group-raw-root');
+    }
+
+    return tags;
+  }
+
+  private buildGroupedIngestContent(
+    extractedText: string,
+    sourceReference: string,
+    groupPath: string,
+    groupedSources: string[]
+  ): string {
+    const groupLabel = groupPath || 'raw root';
+    const peerSources = groupedSources.filter((reference) => reference !== sourceReference);
+    const excerpt = extractedText.trim().slice(0, 8000);
+
+    return [
+      '## Group Context',
+      `- Folder group: ${groupLabel}`,
+      peerSources.length > 0
+        ? `- Related raw sources in this group:\n${peerSources.map((reference) => `  - ${reference}`).join('\n')}`
+        : '- Related raw sources in this group: none',
+      '',
+      '## Source Content',
+      excerpt || '(No extractable content found.)',
+      '',
+      '## Sources',
+      `- [\`${sourceReference}\`](${sourceReference})`,
+    ].join('\n');
   }
 
   /**
@@ -270,10 +586,11 @@ export class WikiManager {
   async createPage(
     title: string,
     content: string,
-    metadata: Partial<FrontmatterMetadata> = {}
+    metadata: Partial<FrontmatterMetadata> = {},
+    pageId?: string
   ): Promise<WikiPage> {
     try {
-      const slug = slugify(title);
+      const slug = pageId || slugify(title);
       const filePath = path.join(this.wikiDir, `${slug}.md`);
 
       // Check if page already exists
@@ -283,10 +600,16 @@ export class WikiManager {
       }
 
       // Generate frontmatter
+      const normalizedLinks = this.normalizeMetadataLinks(metadata);
+      const normalizedSource = typeof metadata.source === 'string' && metadata.source.trim().length > 0
+        ? this.normalizeSourceReference(metadata.source)
+        : normalizedLinks[0];
       const defaultMetadata: FrontmatterMetadata = {
         title,
         created: new Date().toISOString(),
+        links: normalizedLinks,
         ...metadata,
+        source: normalizedSource,
       };
 
       const frontmatter = generateFrontmatter(defaultMetadata);
@@ -312,18 +635,29 @@ export class WikiManager {
         throw new Error(`Page not found: ${pageId}`);
       }
 
+      const filePath = path.join(this.wikiDir, `${pageId}.md`);
+      const currentFileContent = fs.readFileSync(filePath, 'utf-8');
+      const currentMetadata = parseMarkdownWithFrontmatter(currentFileContent).metadata;
+
       // Merge updates
       const updatedMetadata: FrontmatterMetadata = {
+        ...currentMetadata,
         title: updates.title || page.title,
         modified: new Date().toISOString(),
         tags: updates.tags || page.tags,
         aliases: updates.aliases || page.aliases,
+        links: Array.isArray(currentMetadata.links) ? currentMetadata.links : [],
       };
+
+      if (updates.sourceReferences && updates.sourceReferences.length > 0) {
+        const normalizedLinks = updates.sourceReferences.map((source) => this.normalizeSourceReference(source));
+        updatedMetadata.links = normalizedLinks;
+        updatedMetadata.source = normalizedLinks[0];
+      }
 
       const frontmatter = generateFrontmatter(updatedMetadata);
       const fullContent = frontmatter + '\n' + (updates.content || page.content);
 
-      const filePath = path.join(this.wikiDir, `${pageId}.md`);
       fs.writeFileSync(filePath, fullContent, 'utf-8');
       this.logger.info(`Updated wiki page: ${pageId}`);
 
@@ -333,6 +667,33 @@ export class WikiManager {
       this.logger.error(`Failed to update page ${pageId}: ${String(error)}`);
       throw error;
     }
+  }
+
+  private normalizeMetadataLinks(metadata: Partial<FrontmatterMetadata>): string[] {
+    const links = Array.isArray(metadata.links)
+      ? metadata.links.filter((link): link is string => typeof link === 'string' && link.trim().length > 0)
+      : [];
+
+    if (links.length > 0) {
+      return links.map((link) => this.normalizeSourceReference(link));
+    }
+
+    if (typeof metadata.source === 'string' && metadata.source.trim().length > 0) {
+      return [this.normalizeSourceReference(metadata.source)];
+    }
+
+    return [];
+  }
+
+  private buildPageIdFromRawRelativePath(relativePath: string): string {
+    const normalizedPath = relativePath.replace(/\\/g, '/');
+    const extension = path.posix.extname(normalizedPath);
+    const pathWithoutExtension = extension
+      ? normalizedPath.slice(0, -extension.length)
+      : normalizedPath;
+    const dashedPath = pathWithoutExtension.replace(/\//g, '-');
+
+    return slugify(dashedPath);
   }
 
   /**

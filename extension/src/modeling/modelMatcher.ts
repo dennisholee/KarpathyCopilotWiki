@@ -1,29 +1,46 @@
 import { QueryResult } from '../query/queryCommand';
-import { ExistingModelCandidate, ModelingRequirement, ModelSelectionResult } from '../models/types';
+import { ExistingModelCandidate, GuidelineReference, ModelIntent, ModelingRequirement, ModelSelectionResult } from '../models/types';
 
 const ENTITY_HINTS = ['model', 'entity', 'aggregate', 'portfolio', 'transaction', 'account', 'customer'];
 const REQUEST_VERBS = new Set(['add', 'include', 'with', 'capture', 'track', 'extend', 'enhance', 'rename']);
 const GENERIC_ENTITY_TERMS = new Set(['model', 'entity', 'aggregate']);
 const ENTITY_BOUNDARY_TERMS = new Set(['to', 'for', 'on', 'within', 'in', 'of', 'the', 'a', 'an', 'and', 'or', 'with']);
+const DEFINE_PATTERNS = [/^what\s+is\b/i, /^define\b/i, /^explain\b/i, /^describe\b/i, /^tell me about\b/i];
+const DERIVE_PATTERNS = [/\bgenerate\b/i, /\bderive\b/i, /\bcreate\b/i, /\bbuild\b/i];
+const GUIDELINE_PATTERN = /([a-z0-9][a-z0-9\- ]*\b(?:guideline|guidelines|schema|standard|contract))/gi;
+const GENERIC_PAGE_PATTERNS = [
+  /\bglossary\b/i,
+  /\bindex\b/i,
+  /\btable of contents\b/i,
+  /\boverview\b/i,
+  /\bquick reference\b/i,
+  /\bsection\b/i,
+];
 
 export class ModelMatcher {
   buildRequirement(rawRequest: string): ModelingRequirement {
     const normalizedRequest = rawRequest.trim().replace(/\s+/g, ' ');
+    const intent = this.classifyIntent(normalizedRequest);
     const requestedChanges = this.extractRequestedChanges(normalizedRequest);
     const inferredEntityName = this.inferEntityName(normalizedRequest);
+    const targetModelName = this.inferTargetModelName(normalizedRequest, inferredEntityName);
+    const requestedGuidelines = this.extractRequestedGuidelines(normalizedRequest);
 
     return {
       rawRequest,
       normalizedRequest,
+      intent,
       requestedChanges,
+      targetModelName,
       inferredEntityName,
+      requestedGuidelines,
     };
   }
 
   selectBaseline(rawRequest: string, queryResult: QueryResult): ModelSelectionResult {
     const requirement = this.buildRequirement(rawRequest);
     const candidates: ExistingModelCandidate[] = queryResult.results
-      .slice(0, 5)
+      .slice(0, 8)
       .map((result) => ({
         pageId: result.pageId,
         title: result.title,
@@ -66,7 +83,23 @@ export class ModelMatcher {
     };
   }
 
+  private classifyIntent(request: string): ModelIntent {
+    if (DEFINE_PATTERNS.some((pattern) => pattern.test(request))) {
+      return 'define';
+    }
+
+    if (DERIVE_PATTERNS.some((pattern) => pattern.test(request))) {
+      return 'derive';
+    }
+
+    return 'enhance';
+  }
+
   private extractRequestedChanges(request: string): string[] {
+    if (this.classifyIntent(request) === 'derive') {
+      return [];
+    }
+
     const structuredSegments = [
       ...Array.from(
         request.matchAll(/(?:extend|enhance)\s+(?:the\s+)?[a-z0-9_\- ]+\b(?:model|entity|aggregate)\b\s+with\s+([^.;]+)/gi)
@@ -114,6 +147,42 @@ export class ModelMatcher {
     return firstMeaningfulToken || 'proposed_model';
   }
 
+  private inferTargetModelName(request: string, inferredEntityName: string): string {
+    const tokens = request.toLowerCase().match(/[a-z0-9]+/g) || [];
+    const contextualEntity = this.extractContextualEntity(tokens);
+
+    return (contextualEntity || inferredEntityName).toLowerCase();
+  }
+
+  private extractRequestedGuidelines(request: string): GuidelineReference[] {
+    const basedOnSegment = request.match(/(?:based on|using|following|per|under|according to|via)\s+(.+)$/i)?.[1] ?? request;
+    const guidelineSegments = basedOnSegment
+      .split(/,|\band\b/gi)
+      .map((segment) => segment.trim())
+      .filter((segment) => /\b(?:guideline|guidelines|schema|standard|contract)\b/i.test(segment));
+
+    const guidelines = guidelineSegments
+      .flatMap((segment) => Array.from(segment.matchAll(GUIDELINE_PATTERN)).map((match) => match[1].trim()))
+      .filter((value) => value.length > 0)
+      .map((name) => this.cleanGuidelineName(name))
+      .filter((name) => name.length > 0)
+      .map((name) => ({
+        name,
+        normalizedName: this.normalizePhrase(name),
+      }));
+
+    return guidelines.filter((guideline, index, all) =>
+      all.findIndex((candidate) => candidate.normalizedName === guideline.normalizedName) === index
+    );
+  }
+
+  private cleanGuidelineName(name: string): string {
+    return name
+      .replace(/^.+?\b(?:using|following|per|under|according to|via)\b\s+/i, '')
+      .replace(/^(?:the|a|an)\s+/i, '')
+      .trim();
+  }
+
   private normalizePhrase(value: string): string {
     return value
       .toLowerCase()
@@ -155,6 +224,8 @@ export class ModelMatcher {
     let score = candidate.relevanceScore;
     const inferredEntity = requirement.inferredEntityName.toLowerCase();
 
+    score += this.scoreGenericPagePenalty(candidate);
+
     if (!inferredEntity || GENERIC_ENTITY_TERMS.has(inferredEntity)) {
       return score;
     }
@@ -180,6 +251,16 @@ export class ModelMatcher {
     }
 
     return score;
+  }
+
+  private scoreGenericPagePenalty(candidate: ExistingModelCandidate): number {
+    const normalizedSignals = `${candidate.title} ${candidate.pageId} ${candidate.contentExcerpt}`.toLowerCase();
+
+    if (GENERIC_PAGE_PATTERNS.some((pattern) => pattern.test(normalizedSignals))) {
+      return -0.45;
+    }
+
+    return 0;
   }
 
   private matchesTokenSequence(value: string, phrase: string): boolean {

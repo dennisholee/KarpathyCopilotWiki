@@ -1,48 +1,8 @@
-import { ContractValidationResult, ModelProposal, ModelSelectionResult } from '../models/types';
+import { ContractValidationResult, ModelDefinitionSummary, ModelProposal, ModelSelectionResult } from '../models/types';
 
 export class ProposalFormatter {
   formatProposal(proposal: ModelProposal, validationResult: ContractValidationResult): string {
-    const contractLines = proposal.contract.attributes.map((attribute) => {
-      const lines = [
-        `- name: ${this.formatYamlScalar(attribute.name)}`,
-        `  status: ${this.formatYamlScalar(attribute.status)}`,
-        `  description: ${this.formatYamlScalar(attribute.description)}`,
-        `  dataType: ${this.formatYamlScalar(attribute.dataType)}`,
-        `  required: ${attribute.required}`,
-        '  businessRules:',
-        this.formatYamlArray(attribute.businessRules, 4),
-        '  validationLogic:',
-        this.formatYamlArray(attribute.validationLogic, 4),
-        '  sourceMappings:',
-        this.formatYamlArray(attribute.sourceReferences, 4),
-      ];
-
-      if (attribute.renameOf) {
-        lines.splice(2, 0, `  renameOf: ${this.formatYamlScalar(attribute.renameOf)}`);
-      }
-
-      return lines.join('\n');
-    });
-    const changeSummaryYaml = proposal.changeSummary.length > 0
-      ? proposal.changeSummary.map((item) => `  - ${item}`).join('\n')
-      : '  []';
-    const conflictsYaml = proposal.conflicts.length > 0
-      ? proposal.conflicts.map((item) => `  - ${item}`).join('\n')
-      : '  []';
-    const assumptionsYaml = proposal.assumptions.length > 0
-      ? proposal.assumptions.map((item) => `  - ${item}`).join('\n')
-      : '  []';
-    const evidenceYaml = proposal.evidence.length > 0
-      ? proposal.evidence.map((evidence) => {
-          return [
-            `  - wikiPage: ${this.formatYamlScalar(evidence.title)}`,
-            '    rawSources:',
-            this.formatYamlArray(evidence.sourceReferences, 6),
-            `    usage: ${this.formatYamlScalar(evidence.usage)}`,
-            `    conflicted: ${evidence.conflicted}`,
-          ].join('\n');
-        }).join('\n')
-      : '  []';
+    const isDerivedProposal = proposal.requirement.intent === 'derive';
 
     const validationSection = validationResult.issues.length === 0
       ? 'No validation issues detected.'
@@ -52,44 +12,58 @@ export class ProposalFormatter {
       .map((evidence) => `- [[${evidence.title}]] (${evidence.pageId}): ${evidence.usage}${evidence.sourceReferences.length > 0 ? ` [sources: ${evidence.sourceReferences.join(', ')}]` : ''}${evidence.conflicted ? ' [conflicted]' : ''}`)
       .join('\n');
 
+    const contextSection = isDerivedProposal
+      ? [
+          '### Derived Model Context',
+          `- targetModel: ${proposal.contract.displayName}`,
+          `- sourceModel: ${proposal.contract.sourceModel}`,
+          `**Request**: ${proposal.requirement.normalizedRequest}`,
+          '',
+        ]
+      : [
+          '### Preferred Baseline Model',
+          `- title: ${proposal.baselineModel?.title ?? proposal.contract.displayName}`,
+          `- pageId: ${proposal.baselineModel?.pageId ?? 'derived'}`,
+          `**Request**: ${proposal.requirement.normalizedRequest}`,
+          '',
+        ];
+
+    const guidelineSection = proposal.guidelineResolution
+      ? [
+          '### Guideline Handling',
+          proposal.guidelineResolution.rationale,
+          '',
+        ]
+      : [];
+    const placementSection = proposal.placementDecisions && proposal.placementDecisions.length > 0
+      ? [
+          '### Placement Decisions',
+          proposal.placementDecisions
+            .map((decision) => `- ${decision.attributeName}: ${decision.action} ${decision.action === 'rename' ? 'at' : 'after'} ${decision.targetAnchor} - ${decision.rationale}${decision.supportingSources.length > 0 ? ` [sources: ${decision.supportingSources.join(', ')}]` : ''}`)
+            .join('\n'),
+          '',
+        ]
+      : [];
+
+    const contractYaml = this.formatAlignedContract(proposal);
+
     const sections = [
       '## Model Proposal',
       '',
-      '### Preferred Baseline Model',
-      `- title: ${proposal.baselineModel.title}`,
-      `- pageId: ${proposal.baselineModel.pageId}`,
-      `**Request**: ${proposal.requirement.normalizedRequest}`,
-      '',
+      ...contextSection,
       '### Change Summary',
       proposal.changeSummary.map((item) => `- ${item}`).join('\n'),
       '',
+      ...placementSection,
       '### Proposed Contract',
       '```yaml',
-      `id: ${this.formatYamlScalar(proposal.contract.id)}`,
-      `name: ${this.formatYamlScalar(proposal.contract.name)}`,
-      `entityName: ${this.formatYamlScalar(proposal.contract.entityName)}`,
-      `displayName: ${this.formatYamlScalar(proposal.contract.displayName)}`,
-      `version: ${this.formatYamlScalar(proposal.contract.version)}`,
-      `domain: ${this.formatYamlScalar(proposal.contract.domain)}`,
-      `description: ${this.formatYamlScalar(proposal.contract.description)}`,
-      `sourceModel: ${this.formatYamlScalar(proposal.contract.sourceModel)}`,
-      `sourceModelId: ${this.formatYamlScalar(proposal.contract.sourceModelId ?? 'unknown')}`,
-      `rationale: ${this.formatYamlScalar(proposal.rationale)}`,
-      'changeSummary:',
-      changeSummaryYaml,
-      'conflicts:',
-      conflictsYaml,
-      'assumptions:',
-      assumptionsYaml,
-      'attributes:',
-      contractLines.join('\n'),
-      'evidence:',
-      evidenceYaml,
+      ...contractYaml,
       '```',
       '',
       '### Rationale',
       proposal.rationale,
       '',
+      ...guidelineSection,
       '### Wiki Evidence Used',
       evidenceSection,
       '',
@@ -116,6 +90,64 @@ export class ProposalFormatter {
     return sections.join('\n');
   }
 
+  private formatAlignedContract(proposal: ModelProposal): string[] {
+    const ownerLines = proposal.contract.owner
+      ? [
+          'owner:',
+          `  id: ${this.formatYamlScalar(proposal.contract.owner.id)}`,
+          `  type: ${this.formatYamlScalar(proposal.contract.owner.type)}`,
+        ]
+      : ['owner: null'];
+
+    const resourceLines = proposal.contract.resources.length === 0
+      ? ['resources: []']
+      : [
+          'resources:',
+          ...proposal.contract.resources.flatMap((resource) => {
+            const lines = [
+              `  - type: ${this.formatYamlScalar(resource.type)}`,
+              `    name: ${this.formatYamlScalar(resource.name)}`,
+              `    description: ${this.formatYamlScalar(resource.description)}`,
+            ];
+
+            if (Object.keys(resource.properties).length > 0) {
+              lines.push('    properties:');
+              lines.push(...Object.entries(resource.properties).map(([key, value]) => `      ${key}: ${this.formatYamlScalar(value)}`));
+            }
+
+            return lines;
+          }),
+        ];
+
+    const incidentLines = proposal.contract.incidentManagement
+      ? [
+          'incidentManagement:',
+          `  type: ${this.formatYamlScalar(proposal.contract.incidentManagement.type)}`,
+          ...(proposal.contract.incidentManagement.severity
+            ? [`  severity: ${this.formatYamlScalar(proposal.contract.incidentManagement.severity)}`]
+            : []),
+          ...(proposal.contract.incidentManagement.description
+            ? [`  description: ${this.formatYamlScalar(proposal.contract.incidentManagement.description)}`]
+            : []),
+        ]
+      : ['incidentManagement: null'];
+
+    return [
+      `name: ${this.formatYamlScalar(proposal.contract.name)}`,
+      `displayName: ${this.formatYamlScalar(proposal.contract.displayName)}`,
+      `description: ${this.formatYamlScalar(proposal.contract.description)}`,
+      `status: ${this.formatYamlScalar(proposal.contract.status)}`,
+      ...ownerLines,
+      'targetEntity:',
+      `  name: ${this.formatYamlScalar(proposal.contract.targetEntity.name)}`,
+      `  type: ${this.formatYamlScalar(proposal.contract.targetEntity.type)}`,
+      'schemaText: |',
+      ...proposal.contract.schemaText.split('\n').map((line) => `  ${line}`),
+      ...resourceLines,
+      ...incidentLines,
+    ];
+  }
+
   formatRefinementGuidance(selection: ModelSelectionResult): string {
     const candidateLines = selection.candidates.length > 0
       ? selection.candidates.map((candidate) => `- ${candidate.title} (${candidate.matchType}, score ${(candidate.effectiveScore ?? candidate.relevanceScore).toFixed(2)})`).join('\n')
@@ -131,6 +163,43 @@ export class ProposalFormatter {
       '### Closest Candidates',
       candidateLines,
     ].join('\n');
+  }
+
+  formatDefinitionSummary(summary: ModelDefinitionSummary): string {
+    const evidenceSection = summary.evidence.length > 0
+      ? summary.evidence
+          .map((evidence) => `- [[${evidence.title}]] (${evidence.pageId}): ${evidence.usage}${evidence.sourceReferences.length > 0 ? ` [sources: ${evidence.sourceReferences.join(', ')}]` : ''}`)
+          .join('\n')
+      : '- No grounded evidence found.';
+
+    const sections = [
+      '## Model Definition',
+      '',
+      summary.summary,
+      '',
+      '### Key Entities / Relationships',
+      ...summary.keyEntities.map((item) => `- ${item}`),
+      ...summary.keyRelationships.map((item) => `- ${item}`),
+      '',
+      '### Rationale',
+      summary.rationale,
+      '',
+      '### Wiki Evidence Used',
+      evidenceSection,
+      '',
+      '### Raw Source Traceability',
+      evidenceSection,
+    ];
+
+    if (summary.assumptions.length > 0) {
+      sections.push('', '### Assumptions / Gaps', ...summary.assumptions.map((item) => `- ${item}`));
+    }
+
+    if (summary.conflicts.length > 0) {
+      sections.push('', '### Conflicts', ...summary.conflicts.map((item) => `- ${item}`));
+    }
+
+    return sections.join('\n');
   }
 
   private formatYamlArray(values: string[], indent: number): string {

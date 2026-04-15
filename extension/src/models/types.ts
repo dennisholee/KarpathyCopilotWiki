@@ -93,11 +93,27 @@ export interface StructuredAnswer {
   confidenceLabel: StructuredAnswerConfidence;
 }
 
+export type ModelIntent = 'derive' | 'enhance' | 'define';
+
+export interface GuidelineReference {
+  name: string;
+  normalizedName: string;
+}
+
+export interface GuidelineResolution {
+  requestedGuidelines: GuidelineReference[];
+  appliesDefaultOpenMetadata: boolean;
+  rationale: string;
+}
+
 export interface ModelingRequirement {
   rawRequest: string;
   normalizedRequest: string;
+  intent?: ModelIntent;
   requestedChanges: string[];
+  targetModelName?: string;
   inferredEntityName: string;
+  requestedGuidelines?: GuidelineReference[];
 }
 
 export interface ExistingModelCandidate {
@@ -132,26 +148,97 @@ export interface ContractAttribute {
   renameOf?: string;
 }
 
-export interface OpenMetadataModelContract {
+export interface ContractOwner {
   id: string;
+  type: string;
+}
+
+export interface TargetEntityReference {
   name: string;
-  entityName: string;
+  type: string;
+  sourceKind: 'logical' | 'physical';
+}
+
+export interface SchemaEntry {
+  name: string;
+  dataType: string;
+  description?: string;
+  required: boolean;
+  validationRules: string[];
+  sourceReferences: string[];
+  isAssumed: boolean;
+}
+
+export interface ContractResource {
+  type: string;
+  name: string;
+  description: string;
+  properties: Record<string, string>;
+  sourceReferences: string[];
+  isResolved: boolean;
+}
+
+export interface IncidentManagementDefinition {
+  type: string;
+  severity?: string;
+  description?: string;
+  sourceReferences: string[];
+  isResolved: boolean;
+}
+
+export interface OpenMetadataModelContract {
+  name: string;
   displayName: string;
+  description: string;
+  status: string;
+  owner?: ContractOwner | null;
+  targetEntity: TargetEntityReference;
+  schemaText: string;
+  resources: ContractResource[];
+  incidentManagement?: IncidentManagementDefinition | null;
+
+  // Transitional compatibility fields retained while the implementation moves
+  // from the old proposal representation to the aligned contract shape.
+  id: string;
+  entityName: string;
   version: string;
   domain: string;
-  description: string;
-  sourceModel: string;
+  guidelineSources?: string[];
+  fallbackStrategy?: string;
+  sourceModel?: string;
   sourceModelId?: string;
   attributes: ContractAttribute[];
   tags: string[];
 }
 
+export interface PlacementDecision {
+  attributeName: string;
+  action: 'add' | 'refine' | 'rename';
+  targetAnchor: string;
+  rationale: string;
+  supportingSources: string[];
+}
+
 export interface ModelProposal {
   requirement: ModelingRequirement;
-  baselineModel: ExistingModelCandidate;
+  baselineModel?: ExistingModelCandidate;
   contract: OpenMetadataModelContract;
+  guidelineResolution?: GuidelineResolution;
+  placementDecisions?: PlacementDecision[];
   rationale: string;
   changeSummary: string[];
+  assumptions: string[];
+  conflicts: string[];
+  evidence: EvidenceReference[];
+}
+
+export interface ModelDefinitionSummary {
+  requirement: ModelingRequirement;
+  targetModel?: ExistingModelCandidate;
+  summary: string;
+  keyEntities: string[];
+  keyRelationships: string[];
+  rationale: string;
   assumptions: string[];
   conflicts: string[];
   evidence: EvidenceReference[];

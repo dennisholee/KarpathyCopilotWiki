@@ -1,5 +1,3 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import * as vscode from 'vscode';
 import { Logger } from '../utils/logger';
 import { SearchEngine } from '../search/search-engine';
@@ -97,14 +95,16 @@ export class WikiChatParticipant {
         this.logger.info('Displaying ingest help');
         stream.markdown(
           '**Wiki Ingest Help**\n\n' +
-          'Usage: `ingest` to process all files in `/raw`, or `ingest [filename]` for one file\n\n' +
+          'Usage: `ingest` to process all files in `/raw`, `ingest [folder]` for one raw subdirectory, or `ingest [filename]` for one file\n\n' +
           '**Examples:**\n' +
           '- `ingest`\n' +
           '- `ingest *`\n' +
+          '- `ingest PHASE_1_2`\n' +
           '- `ingest my-document.pdf`\n' +
+          '- `ingest banking/risk/customer.csv`\n' +
           '- `ingest for research-paper.md`\n' +
           '- `ingest technical-spec.txt`\n\n' +
-          'This will ingest all raw files or a specific raw document from `/raw` and create wiki pages with summaries and backlinks.'
+          'This will ingest all raw files or a specific raw document from `/raw`, including nested folders, and create wiki pages with summaries, grouping context, and backlinks.'
         );
         return {};
       } else if (command === 'query-help') {
@@ -168,10 +168,11 @@ export class WikiChatParticipant {
     stream: vscode.ChatResponseStream
   ): Promise<vscode.ChatResult> {
     const trimmedRequest = rawRequest.trim();
+    const requirement = this.modelMatcher.buildRequirement(trimmedRequest);
 
     if (!trimmedRequest) {
       stream.markdown(this.proposalFormatter.formatRefinementGuidance({
-        requirement: this.modelMatcher.buildRequirement(rawRequest),
+        requirement,
         candidates: [],
         needsRefinement: true,
         refinementReason: 'A modelling requirement is required before a proposal can be generated.',
@@ -201,7 +202,36 @@ export class WikiChatParticipant {
     }
 
     let response: string;
-    if (selection.needsRefinement || !selection.baselineCandidate) {
+    const canDeriveWithoutBaseline = requirement.intent === 'derive' && (
+      queryResult.results.length > 0 ||
+      queryResult.evidenceBundle.supportingPages.length > 0 ||
+      queryResult.evidenceBundle.supportingFacts.length > 0
+    );
+    const shouldDefaultToAlignedContract = requirement.intent !== 'define';
+    const canDefineFromEvidence = requirement.intent === 'define' && (
+      Boolean(selection.baselineCandidate) ||
+      selection.candidates.length > 0 ||
+      queryResult.evidenceBundle.supportingPages.length > 0 ||
+      queryResult.evidenceBundle.supportingFacts.length > 0
+    );
+
+    if (shouldDefaultToAlignedContract && canDeriveWithoutBaseline) {
+      const proposal = this.proposalBuilder.buildDerivedProposal(selection, queryResult);
+      const validation = this.contractValidator.validate(
+        proposal.contract,
+        proposal.rationale,
+        proposal.evidence.length
+      );
+      response = this.proposalFormatter.formatProposal(proposal, validation);
+    } else if (canDefineFromEvidence) {
+      const summary = this.proposalBuilder.buildDefinitionSummary(selection, queryResult);
+      response = this.proposalFormatter.formatDefinitionSummary(summary);
+    } else if (selection.needsRefinement || !selection.baselineCandidate) {
+      if (requirement.intent === 'define' && selection.candidates.length > 0) {
+        selection.refinementReason = selection.refinementReason ??
+          'The definition request needs a more specific model or relationship target before a grounded summary can be returned.';
+      }
+
       response = this.proposalFormatter.formatRefinementGuidance(selection);
     } else {
       const proposal = this.proposalBuilder.buildProposal(selection, queryResult);
@@ -314,7 +344,7 @@ export class WikiChatParticipant {
 
       if (!trimmedSourceFile || trimmedSourceFile === '*') {
         this.logger.info('Ingest command initiated for all files in /raw');
-        stream.markdown('📂 Ingesting all files from `/raw`...\n\n');
+        stream.markdown('📂 Ingesting all files from `/raw`, including subdirectories...\n\n');
 
         await vscode.window.withProgress(
           {
@@ -334,13 +364,20 @@ export class WikiChatParticipant {
 
             const response =
               '✅ **Full Raw Ingestion Complete**\n\n' +
-              `- **Files Processed**: all files in /raw\n` +
+              `- **Files Processed**: all supported files in /raw and nested folders\n` +
               `- **Pages Created**: ${ingestSummary.created}\n` +
               `- **Pages Updated**: ${ingestSummary.updated}\n` +
+              `- **File Failures**: ${ingestSummary.failures.length}\n` +
               `- **Index Pages Scanned**: ${indexStats.pagesIndexed}\n` +
               `- **Glossary Terms**: ${indexStats.termsInGlossary}\n` +
               `- **Categories Found**: ${indexStats.categoriesFound}\n\n` +
-              'The wiki has been refreshed from the full raw corpus.';
+              'The wiki has been refreshed from the full raw corpus.' +
+              (ingestSummary.failures.length > 0
+                ? `\n\n**File failures:**\n${ingestSummary.failures
+                    .slice(0, 10)
+                    .map((failure) => `- ${failure.relativePath}: ${failure.reason}`)
+                    .join('\n')}`
+                : '');
 
             stream.markdown(response);
 
@@ -371,15 +408,90 @@ export class WikiChatParticipant {
 
       this.logger.info(`Ingest command initiated for: ${trimmedSourceFile}`);
 
+      const rawDirectoryResolution = this.wikiManager.resolveRawDirectoryTarget(trimmedSourceFile);
+
+      if (rawDirectoryResolution.status === 'ambiguous') {
+        stream.markdown(
+          `❌ Ambiguous raw folder target: \`${trimmedSourceFile}\`\n\n` +
+          '**Matching folders:**\n' +
+          (rawDirectoryResolution.matches || []).map((folderName: string) => `- ${folderName}`).join('\n') +
+          '\n\nProvide the raw-relative folder path to disambiguate the folder.'
+        );
+        return {};
+      }
+
+      if (rawDirectoryResolution.status === 'resolved' && rawDirectoryResolution.relativePath !== undefined) {
+        const relativeDirectory = rawDirectoryResolution.relativePath;
+        const fileCount = rawDirectoryResolution.files?.length || 0;
+
+        stream.markdown(`📂 Ingesting folder ${relativeDirectory || 'raw root'}...\n\n`);
+
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: 'Ingesting Raw Folder',
+            cancellable: false,
+          },
+          async (progress) => {
+            progress.report({ message: 'Scanning selected raw folder...', increment: 0 });
+
+            const ingestSummary = await this.wikiManager.ingestFromRaw(relativeDirectory);
+            progress.report({ message: 'Rebuilding wiki index...', increment: 80 });
+
+            const indexBuilder = new IndexBuilder(this.wikiManager.getWikiDir(), this.logger);
+            const indexStats = await indexBuilder.rebuildIndex();
+            progress.report({ message: 'Folder ingest complete!', increment: 100 });
+
+            const response =
+              '✅ **Folder Ingestion Complete**\n\n' +
+              `- **Source Folder**: ${relativeDirectory || 'raw root'}\n` +
+              `- **Files Matched**: ${fileCount}\n` +
+              `- **Pages Created**: ${ingestSummary.created}\n` +
+              `- **Pages Updated**: ${ingestSummary.updated}\n` +
+              `- **File Failures**: ${ingestSummary.failures.length}\n` +
+              `- **Index Pages Scanned**: ${indexStats.pagesIndexed}\n` +
+              `- **Glossary Terms**: ${indexStats.termsInGlossary}\n` +
+              `- **Categories Found**: ${indexStats.categoriesFound}\n\n` +
+              'The wiki has been refreshed from the selected raw folder.' +
+              (ingestSummary.failures.length > 0
+                ? `\n\n**File failures:**\n${ingestSummary.failures
+                    .slice(0, 10)
+                    .map((failure) => `- ${failure.relativePath}: ${failure.reason}`)
+                    .join('\n')}`
+                : '');
+
+            stream.markdown(response);
+
+            this.conversationHistory.push({
+              speaker: 'assistant',
+              message: response,
+              timestamp: new Date(),
+            });
+          }
+        );
+
+        return {};
+      }
+
       // Resolve full path to raw file
-      const rawDir = this.wikiManager.getRawDir();
-      const rawFilePath = path.join(rawDir, trimmedSourceFile);
+      const rawFileResolution = this.wikiManager.resolveRawFileTarget(trimmedSourceFile);
 
       // Verify file exists
-      if (!fs.existsSync(rawFilePath)) {
-        const availableFiles = fs
-          .readdirSync(rawDir)
-          .filter((fileName: string) => !fileName.startsWith('.'))
+      if (rawFileResolution.status === 'ambiguous') {
+        stream.markdown(
+          `❌ Ambiguous raw file target: \`${trimmedSourceFile}\`\n\n` +
+          '**Matching files:**\n' +
+          (rawFileResolution.matches || []).map((fileName: string) => `- ${fileName}`).join('\n') +
+          '\n\nProvide the raw-relative path to disambiguate the file.'
+        );
+        return {};
+      }
+
+      const rawFilePath = rawFileResolution.absolutePath;
+
+      if (rawFileResolution.status !== 'resolved' || !rawFilePath) {
+        const availableFiles = this.wikiManager
+          .listRawFiles()
           .slice(0, 10);
         stream.markdown(
           `❌ File not found: \`${trimmedSourceFile}\`\n\n` +
@@ -391,7 +503,14 @@ export class WikiChatParticipant {
         return {};
       }
 
-      stream.markdown(`📂 Ingesting ${trimmedSourceFile}...\n\n`);
+      const rawRelativePath = this.wikiManager.toRawRelativePath(rawFilePath);
+      const rawGroup = this.wikiManager.getRawGroup(rawRelativePath);
+      const groupDocuments = this.wikiManager
+        .listRawFiles()
+        .filter((relativePath) => this.wikiManager.getRawGroup(relativePath) === rawGroup)
+        .map((relativePath) => `/raw/${relativePath}`);
+
+      stream.markdown(`📂 Ingesting ${rawRelativePath}...\n\n`);
 
       const orchestrator = new IngestOrchestrator(this.wikiManager.getWikiDir(), this.logger);
 
@@ -407,6 +526,9 @@ export class WikiChatParticipant {
 
           const result = await orchestrator.ingest({
             sourceFile: rawFilePath,
+            sourceReference: `/raw/${rawRelativePath}`,
+            groupPath: rawGroup,
+            groupDocuments,
             skipBacklinks: false,
             maxPages: 10,
           });
@@ -416,14 +538,23 @@ export class WikiChatParticipant {
 
           const response =
             `✅ **Ingestion Complete**\n\n` +
-            `- **Source**: ${trimmedSourceFile}\n` +
+            `- **Source**: ${rawRelativePath}\n` +
+            `- **Folder Group**: ${rawGroup || 'raw root'}\n` +
             `- **Pages Created**: ${result.pagesCreated.length}\n` +
+            `- **Pages Updated**: ${result.pagesUpdated.length}\n` +
             `- **Failed Pages**: ${result.failedPages.length}\n` +
             `- **Backlinks Inserted**: ${result.backlinksInserted}\n` +
             `- **Duration**: ${(result.duration / 1000).toFixed(2)}s\n\n`;
 
           if (result.pagesCreated.length > 0) {
             stream.markdown(response + `**Created pages:**\n${result.pagesCreated.map((p) => `- ${p}`).join('\n')}`);
+          } else if (result.pagesUpdated.length > 0) {
+            stream.markdown(response + `**Updated pages:**\n${result.pagesUpdated.map((p) => `- ${p}`).join('\n')}`);
+          } else if (result.failedPages.length > 0) {
+            stream.markdown(
+              response +
+              `**Failed pages:**\n${result.failedPages.map((pageName) => `- ${rawRelativePath}: ${pageName}`).join('\n')}`
+            );
           } else {
             stream.markdown(response + 'ℹ️ No pages were created during ingestion.');
           }
