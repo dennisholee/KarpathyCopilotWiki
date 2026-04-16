@@ -2,6 +2,16 @@ import { StructuredAnswer } from '../models/types';
 
 export function formatStructuredAnswer(answer: StructuredAnswer): string {
   const lines: string[] = [];
+  const mode = answer.mode ?? 'strict';
+  const usedSupplementalKnowledge = Boolean(answer.usedSupplementalKnowledge);
+
+  lines.push(`**Answer Mode**: ${mode === 'strict' ? 'Strict wiki-only grounding' : 'Flexible wiki-first answer'}`);
+  lines.push('');
+
+  if (usedSupplementalKnowledge) {
+    lines.push('*This answer includes supplemental context beyond the wiki evidence.*');
+    lines.push('');
+  }
 
   lines.push('**Direct Answer**');
   lines.push('');

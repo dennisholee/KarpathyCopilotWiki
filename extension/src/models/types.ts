@@ -46,6 +46,32 @@ export type QueryCoverageAssessment = 'complete' | 'partial' | 'insufficient' | 
 
 export type StructuredAnswerConfidence = 'supported' | 'partially-supported' | 'insufficient-support';
 
+export type GroundTruthMode = 'strict' | 'flexible';
+
+export interface GroundTruthModeSetting {
+  key: 'wiki.groundTruthMode';
+  mode: GroundTruthMode;
+  defaultMode: GroundTruthMode;
+  scope: 'workspace';
+}
+
+export interface AnsweringPolicy {
+  mode: GroundTruthMode;
+  wikiOnly: boolean;
+  allowSupplementalSources: boolean;
+  showModeIndicator: boolean;
+}
+
+export interface WikiAnswerEnvelope {
+  query: string;
+  effectiveQuery: string;
+  mode: GroundTruthMode;
+  directAnswer: string;
+  supportingReferences: string[];
+  coverageGaps: string[];
+  usedSupplementalKnowledge: boolean;
+}
+
 export interface PreviousWikiTurn {
   query: string;
   answer: string;
@@ -85,12 +111,14 @@ export interface EvidenceBundle {
 }
 
 export interface StructuredAnswer {
+  mode?: GroundTruthMode;
   directAnswer: string;
   keyDetails: string[];
   supportingReferences: string[];
   conflicts: string[];
   coverageGaps: string[];
   confidenceLabel: StructuredAnswerConfidence;
+  usedSupplementalKnowledge?: boolean;
 }
 
 export type ModelIntent = 'derive' | 'enhance' | 'define';

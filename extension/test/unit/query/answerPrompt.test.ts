@@ -98,4 +98,22 @@ describe('answerPrompt', () => {
     expect(prompt).not.toContain('Conflicts:');
     expect(prompt).not.toContain('Coverage gaps:');
   });
+
+  it('builds a flexible-mode prompt that allows labeled supplemental context', () => {
+    const prompt = buildDirectAnswerPrompt(
+      'What are the exception rules and common practices?',
+      evidenceBundle,
+      undefined,
+      {
+        mode: 'flexible',
+        wikiOnly: false,
+        allowSupplementalSources: true,
+        showModeIndicator: true,
+      }
+    );
+
+    expect(prompt).toContain('Start with the grounded wiki evidence below');
+    expect(prompt).toContain('Supplemental context:');
+    expect(prompt).toContain('do not contradict the grounded evidence');
+  });
 });

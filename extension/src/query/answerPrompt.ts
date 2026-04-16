@@ -1,4 +1,4 @@
-import { EvidenceBundle, PreviousWikiTurn } from '../models/types';
+import { AnsweringPolicy, EvidenceBundle, PreviousWikiTurn } from '../models/types';
 
 const FOLLOW_UP_PATTERNS = [
   /^(and|what about|how about|tell me more|more about|what are the exceptions|what about the exceptions)/i,
@@ -28,7 +28,13 @@ export function buildEffectiveQuery(
 export function buildDirectAnswerPrompt(
   query: string,
   evidenceBundle: EvidenceBundle,
-  previousTurn?: PreviousWikiTurn
+  previousTurn?: PreviousWikiTurn,
+  policy: AnsweringPolicy = {
+    mode: 'strict',
+    wikiOnly: true,
+    allowSupplementalSources: false,
+    showModeIndicator: true,
+  }
 ): string {
   const factLines = evidenceBundle.supportingFacts
     .slice(0, 6)
@@ -47,9 +53,19 @@ export function buildDirectAnswerPrompt(
     ? `\nPrevious wiki turn for context:\n- Question: ${previousTurn.query}\n- Answer: ${previousTurn.answer}`
     : '';
 
+  const instructionLines = policy.allowSupplementalSources
+    ? [
+        'Start with the grounded wiki evidence below when writing one concise direct answer paragraph.',
+        'If the grounded evidence is incomplete, you may add concise supplemental context beyond the wiki.',
+        'Mark any non-wiki material with the phrase "Supplemental context:" and do not contradict the grounded evidence.',
+      ]
+    : [
+        'Use only the grounded evidence below to write one concise direct answer paragraph.',
+        'Do not invent facts or use outside knowledge. If the evidence is partial or conflicted, reflect that in the answer.',
+      ];
+
   return [
-    'Use only the grounded evidence below to write one concise direct answer paragraph.',
-    'Do not invent facts. If the evidence is partial or conflicted, reflect that in the answer.',
+    ...instructionLines,
     `User question: ${query}`,
     previousContext,
     '\nGrounded facts:',

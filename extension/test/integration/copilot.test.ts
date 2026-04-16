@@ -407,6 +407,169 @@ Portfolio withdrawals must not be approved before processing.
     });
   });
 
+  describe('Ground truth mode behavior', () => {
+    beforeEach(() => {
+      const page = `---
+title: Machine Learning Overview
+source: "ml-foundations.md"
+tags:
+  - ml
+---
+
+# Machine Learning Overview
+
+Machine learning learns patterns from data and improves predictions over time.
+Grounded wiki guidance focuses on supervised and unsupervised learning fundamentals.
+`;
+
+      fs.writeFileSync(path.join(wikiDir, '20260416_ml-overview.md'), page);
+    });
+
+    it('keeps strict mode wiki-only when grounded evidence is missing', async () => {
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = { markdown: jest.fn() };
+      const model = { sendRequest: jest.fn() };
+
+      (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+        get: jest.fn((key: string, defaultValue: unknown) => {
+          if (key === 'groundTruthMode') {
+            return 'strict';
+          }
+          if (key === 'enableRemoteAnswerSynthesis') {
+            return true;
+          }
+          return defaultValue;
+        }),
+      });
+
+      await participant.handle(
+        { prompt: 'unmapped nonexistent domain phrase', model } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('**Answer Mode**: Strict wiki-only grounding');
+      expect(output).toContain('does not contain enough grounded information');
+      expect(model.sendRequest).not.toHaveBeenCalled();
+    });
+
+    it('allows flexible mode to supplement while preserving wiki references when ground truth is disabled', async () => {
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = { markdown: jest.fn() };
+      const model = {
+        sendRequest: jest.fn(async () => ({
+          text: (async function* () {
+            yield 'Machine learning learns from data. Supplemental context: Common algorithms include decision trees and support vector machines.';
+          })(),
+        })),
+      };
+
+      (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+        get: jest.fn((key: string, defaultValue: unknown) => {
+          if (key === 'groundTruthMode') {
+            return 'flexible';
+          }
+          return defaultValue;
+        }),
+      });
+
+      await participant.handle(
+        { prompt: 'What is machine learning and what algorithms are common?', model } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('**Answer Mode**: Flexible wiki-first answer');
+      expect(output).toContain('supplemental context beyond the wiki evidence');
+      expect(output).toContain('Wiki: Machine Learning Overview');
+      expect(output).toContain('Source: /raw/ml-foundations.md');
+      expect(model.sendRequest).toHaveBeenCalled();
+    });
+
+    it('applies the current workspace settings file value to query behavior', async () => {
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = { markdown: jest.fn() };
+      const model = {
+        sendRequest: jest.fn(async () => ({
+          text: (async function* () {
+            yield 'Machine learning learns from data. Supplemental context: Common algorithms include decision trees and support vector machines.';
+          })(),
+        })),
+      };
+      const workspaceSettingsPath = path.resolve(__dirname, '../../../.vscode/settings.json');
+      const workspaceSettings = JSON.parse(fs.readFileSync(workspaceSettingsPath, 'utf8')) as {
+        'wiki.groundTruthMode'?: 'strict' | 'flexible';
+      };
+
+      (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+        get: jest.fn((key: string, defaultValue: unknown) => {
+          if (key === 'groundTruthMode') {
+            return workspaceSettings['wiki.groundTruthMode'] ?? defaultValue;
+          }
+          return defaultValue;
+        }),
+      });
+
+      await participant.handle(
+        { prompt: 'What is machine learning and what algorithms are common?', model } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+
+      if (workspaceSettings['wiki.groundTruthMode'] === 'flexible') {
+        expect(output).toContain('**Answer Mode**: Flexible wiki-first answer');
+        expect(model.sendRequest).toHaveBeenCalled();
+      } else {
+        expect(output).toContain('**Answer Mode**: Strict wiki-only grounding');
+      }
+    });
+
+    it('applies mode changes on the next request without restart', async () => {
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const firstStream = { markdown: jest.fn() };
+      const secondStream = { markdown: jest.fn() };
+      let currentMode: 'strict' | 'flexible' = 'strict';
+
+      (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+        get: jest.fn((key: string, defaultValue: unknown) => {
+          if (key === 'groundTruthMode') {
+            return currentMode;
+          }
+          return defaultValue;
+        }),
+      });
+
+      await participant.handle(
+        { prompt: 'Please explain machine learning fundamentals' } as unknown as never,
+        {} as never,
+        firstStream as never,
+        {} as never
+      );
+
+      currentMode = 'flexible';
+
+      await participant.handle(
+        { prompt: 'Please explain machine learning fundamentals' } as unknown as never,
+        {} as never,
+        secondStream as never,
+        {} as never
+      );
+
+      const firstOutput = firstStream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      const secondOutput = secondStream.markdown.mock.calls.map((call) => call[0]).join('\n');
+
+      expect(firstOutput).toContain('**Answer Mode**: Strict wiki-only grounding');
+      expect(secondOutput).toContain('**Answer Mode**: Flexible wiki-first answer');
+    });
+  });
+
   describe('Copilot Chat Integration', () => {
     beforeEach(() => {
       // Create sample wiki pages

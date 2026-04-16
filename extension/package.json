@@ -130,6 +130,12 @@
           "default": false,
           "description": "Explicitly allow remote chat-model synthesis for the Direct Answer section; grounded local evidence selection remains active and the extension will disclose when remote synthesis is used"
         },
+        "wiki.groundTruthMode": {
+          "type": "string",
+          "enum": ["strict", "flexible"],
+          "default": "strict",
+          "description": "Controls how @wiki answers questions: strict keeps answers grounded in wiki evidence only, while flexible stays wiki-first but may supplement with broader model knowledge when allowed."
+        },
         "wiki.enableRemoteLLM": {
           "type": "boolean",
           "default": false,

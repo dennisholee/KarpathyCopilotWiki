@@ -8,20 +8,26 @@ import { ErrorHandler } from '../utils/error-handler';
 import { SearchEngine } from '../search/search-engine';
 import { WikiManager } from '../wiki/wiki-manager';
 import {
+  AnsweringPolicy,
   ConflictItem,
   CoverageGap,
   EvidenceBundle,
   PreviousWikiTurn,
   QueryCoverageAssessment,
   StructuredAnswer,
+  StructuredAnswerConfidence,
   SupportingFact,
+  WikiAnswerEnvelope,
 } from '../models/types';
 import { formatStructuredAnswer } from './answerFormatter';
+import { createDefaultAnsweringPolicy } from './groundTruthMode';
 
 export interface QueryOptions {
   maxResults?: number;
   useLocalEmbeddings?: boolean;
   previousTurn?: PreviousWikiTurn;
+  effectiveQuery?: string;
+  answeringPolicy?: AnsweringPolicy;
 }
 
 export interface QueryResult {
@@ -32,7 +38,9 @@ export interface QueryResult {
   usedFallback: boolean;
   executionTime: number;
   evidenceBundle: EvidenceBundle;
+  answeringPolicy?: AnsweringPolicy;
   answer: StructuredAnswer;
+  answerEnvelope?: WikiAnswerEnvelope;
 }
 
 export interface SearchResultDetail {
@@ -66,17 +74,19 @@ export class QueryHandler {
     const startTime = Date.now();
     const maxResults = options.maxResults || 5;
     let usedFallback = false;
-    const effectiveQuery = userQuery;
+    const effectiveQuery = options.effectiveQuery?.trim() || userQuery;
+    const answeringPolicy = options.answeringPolicy || createDefaultAnsweringPolicy();
 
     try {
-      this.logger.info(`Executing query: "${userQuery}"`);
+      this.logger.info(`Executing query: "${effectiveQuery}"`);
 
       // Step 1: Try Copilot Chat primary search (if available from context)
-      const primaryResults = await this.searchPrimary(userQuery, maxResults);
+      const primaryResults = await this.searchPrimary(effectiveQuery, maxResults);
 
       if (primaryResults.length > 0) {
         this.logger.info(`Found ${primaryResults.length} results via primary search`);
-        const evidenceBundle = this.buildEvidenceBundle(userQuery, primaryResults);
+        const evidenceBundle = this.buildEvidenceBundle(effectiveQuery, primaryResults);
+        const answer = this.buildStructuredAnswer(userQuery, evidenceBundle, answeringPolicy);
         return {
           query: userQuery,
           effectiveQuery,
@@ -85,19 +95,22 @@ export class QueryHandler {
           usedFallback: false,
           executionTime: Date.now() - startTime,
           evidenceBundle,
-          answer: this.buildStructuredAnswer(userQuery, evidenceBundle),
+          answeringPolicy,
+          answer,
+          answerEnvelope: this.buildAnswerEnvelope(userQuery, effectiveQuery, answer),
         };
       }
 
       // Step 2: Fall back to local embeddings if available and enabled
       if (options.useLocalEmbeddings) {
         this.logger.info('Falling back to local embeddings search');
-        const fallbackResults = await this.searchLocalFallback(userQuery, maxResults);
+        const fallbackResults = await this.searchLocalFallback(effectiveQuery, maxResults);
 
         if (fallbackResults.length > 0) {
           usedFallback = true;
           this.logger.info(`Found ${fallbackResults.length} results via fallback search`);
-          const evidenceBundle = this.buildEvidenceBundle(userQuery, fallbackResults);
+          const evidenceBundle = this.buildEvidenceBundle(effectiveQuery, fallbackResults);
+          const answer = this.buildStructuredAnswer(userQuery, evidenceBundle, answeringPolicy);
           return {
             query: userQuery,
             effectiveQuery,
@@ -106,15 +119,18 @@ export class QueryHandler {
             usedFallback: true,
             executionTime: Date.now() - startTime,
             evidenceBundle,
-            answer: this.buildStructuredAnswer(userQuery, evidenceBundle),
+            answeringPolicy,
+            answer,
+            answerEnvelope: this.buildAnswerEnvelope(userQuery, effectiveQuery, answer),
           };
         }
       }
 
       // Step 3: Basic keyword search fallback
       this.logger.info('Using basic keyword search fallback');
-      const keywordResults = await this.searchKeywords(userQuery, maxResults);
-      const evidenceBundle = this.buildEvidenceBundle(userQuery, keywordResults);
+      const keywordResults = await this.searchKeywords(effectiveQuery, maxResults);
+      const evidenceBundle = this.buildEvidenceBundle(effectiveQuery, keywordResults);
+      const answer = this.buildStructuredAnswer(userQuery, evidenceBundle, answeringPolicy);
 
       return {
         query: userQuery,
@@ -124,12 +140,15 @@ export class QueryHandler {
         usedFallback: keywordResults.length > 0 && primaryResults.length === 0,
         executionTime: Date.now() - startTime,
         evidenceBundle,
-        answer: this.buildStructuredAnswer(userQuery, evidenceBundle),
+        answeringPolicy,
+        answer,
+        answerEnvelope: this.buildAnswerEnvelope(userQuery, effectiveQuery, answer),
       };
     } catch (error) {
       this.logger.error(`Query execution failed: ${String(error)}`);
 
-      const evidenceBundle = this.createInsufficientEvidenceBundle(userQuery);
+      const evidenceBundle = this.createInsufficientEvidenceBundle(effectiveQuery);
+      const answer = this.buildStructuredAnswer(userQuery, evidenceBundle, answeringPolicy);
 
       // Ultimate fallback: return empty results gracefully
       return {
@@ -140,7 +159,9 @@ export class QueryHandler {
         usedFallback: true,
         executionTime: Date.now() - startTime,
         evidenceBundle,
-        answer: this.buildStructuredAnswer(userQuery, evidenceBundle),
+        answeringPolicy,
+        answer,
+        answerEnvelope: this.buildAnswerEnvelope(userQuery, effectiveQuery, answer),
       };
     }
   }
@@ -457,7 +478,11 @@ export class QueryHandler {
     ];
   }
 
-  private buildStructuredAnswer(query: string, evidenceBundle: EvidenceBundle): StructuredAnswer {
+  private buildStructuredAnswer(
+    query: string,
+    evidenceBundle: EvidenceBundle,
+    answeringPolicy: AnsweringPolicy
+  ): StructuredAnswer {
     const supportingReferences = [
       ...evidenceBundle.supportingPages.map((page) => `Wiki: ${page.title}`),
       ...evidenceBundle.sourceReferences.map((source) => `Source: ${source}`),
@@ -465,12 +490,16 @@ export class QueryHandler {
 
     if (evidenceBundle.coverageAssessment === 'insufficient') {
       return {
-        directAnswer: 'The available wiki material does not contain enough grounded information to answer this question completely.',
+        mode: answeringPolicy.mode,
+        directAnswer: answeringPolicy.allowSupplementalSources
+          ? 'The available wiki material does not contain enough grounded information to answer this question completely. Flexible mode may supplement with broader context when remote synthesis is available.'
+          : 'The available wiki material does not contain enough grounded information to answer this question completely.',
         keyDetails: [],
         supportingReferences,
         conflicts: [],
         coverageGaps: evidenceBundle.coverageGaps.map((gap) => `${gap.reason} ${gap.suggestedFollowUp}`),
         confidenceLabel: 'insufficient-support',
+        usedSupplementalKnowledge: false,
       };
     }
 
@@ -479,12 +508,30 @@ export class QueryHandler {
     const keyDetails = evidenceBundle.supportingFacts.slice(2, 6).map((fact) => fact.statement);
 
     return {
+      mode: answeringPolicy.mode,
       directAnswer: directAnswer || 'The wiki contains relevant evidence, but the answer should be treated as only partially supported.',
       keyDetails,
       supportingReferences: Array.from(new Set(supportingReferences)),
       conflicts: evidenceBundle.conflicts.map((conflict) => `${conflict.summary} Sources: ${conflict.supportingSources.join(', ')}`),
       coverageGaps: evidenceBundle.coverageGaps.map((gap) => `${gap.reason} ${gap.suggestedFollowUp}`),
       confidenceLabel: evidenceBundle.coverageAssessment === 'complete' ? 'supported' : 'partially-supported',
+      usedSupplementalKnowledge: false,
+    };
+  }
+
+  private buildAnswerEnvelope(
+    query: string,
+    effectiveQuery: string,
+    answer: StructuredAnswer
+  ): WikiAnswerEnvelope {
+    return {
+      query,
+      effectiveQuery,
+      mode: answer.mode || 'strict',
+      directAnswer: answer.directAnswer,
+      supportingReferences: answer.supportingReferences,
+      coverageGaps: answer.coverageGaps,
+      usedSupplementalKnowledge: Boolean(answer.usedSupplementalKnowledge),
     };
   }
 
@@ -532,13 +579,31 @@ export class QueryHandler {
     return queryTerms.filter((term) => leftTerms.has(term) && rightTerms.has(term)).length;
   }
 
-  withDirectAnswer(queryResult: QueryResult, directAnswer: string): QueryResult {
+  withDirectAnswer(
+    queryResult: QueryResult,
+    directAnswer: string,
+    options: {
+      usedSupplementalKnowledge?: boolean;
+      confidenceLabel?: StructuredAnswerConfidence;
+    } = {}
+  ): QueryResult {
+    const usedSupplementalKnowledge = Boolean(options.usedSupplementalKnowledge);
+    const confidenceLabel = options.confidenceLabel
+      || (usedSupplementalKnowledge && queryResult.answer.confidenceLabel === 'insufficient-support'
+        ? 'partially-supported'
+        : queryResult.answer.confidenceLabel);
+
+    const updatedAnswer: StructuredAnswer = {
+      ...queryResult.answer,
+      directAnswer,
+      usedSupplementalKnowledge,
+      confidenceLabel,
+    };
+
     return {
       ...queryResult,
-      answer: {
-        ...queryResult.answer,
-        directAnswer,
-      },
+      answer: updatedAnswer,
+      answerEnvelope: this.buildAnswerEnvelope(queryResult.query, queryResult.effectiveQuery, updatedAnswer),
     };
   }
 

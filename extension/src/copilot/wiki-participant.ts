@@ -6,6 +6,7 @@ import { QueryHandler, QueryResult } from '../query/queryCommand';
 import { ArchivedDecision, DecisionArchiver, ConversationEntry } from '../query/decisionArchiver';
 import { PreviousWikiTurn } from '../models/types';
 import { buildDirectAnswerPrompt, buildEffectiveQuery } from '../query/answerPrompt';
+import { buildAnsweringPolicy, createDefaultAnsweringPolicy } from '../query/groundTruthMode';
 import { IndexBuilder } from '../commands/indexRebuild';
 import { IngestOrchestrator } from '../ingest/ingestCommand';
 import { GuidelineTransformer } from '../ingest/guidelineTransformer';
@@ -274,10 +275,14 @@ export class WikiChatParticipant {
   ): Promise<vscode.ChatResult> {
     this.logger.info(`Executing query: "${query}"`);
 
-    const queryResult = await this.queryHandler.query(query, {
+    const answeringPolicy = buildAnsweringPolicy();
+
+    const queryResult = await this.queryHandler.query(displayQuery || query, {
       maxResults: 5,
       useLocalEmbeddings: true,
       previousTurn,
+      effectiveQuery: query,
+      answeringPolicy,
     });
 
     const synthesizedResult = await this.applyRemoteSynthesisIfEnabled(
@@ -945,7 +950,9 @@ export class WikiChatParticipant {
     token: vscode.CancellationToken
   ): Promise<QueryResult> {
     const configuration = vscode.workspace.getConfiguration('wiki');
-    const remoteSynthesisEnabled = configuration.get<boolean>('enableRemoteAnswerSynthesis', false);
+    const answeringPolicy = queryResult.answeringPolicy || createDefaultAnsweringPolicy();
+    const remoteSynthesisEnabled = answeringPolicy.allowSupplementalSources
+      || configuration.get<boolean>('enableRemoteAnswerSynthesis', false);
 
     if (!remoteSynthesisEnabled) {
       return queryResult;
@@ -957,7 +964,10 @@ export class WikiChatParticipant {
       };
     };
 
-    if (!requestWithModel.model || queryResult.evidenceBundle.supportingFacts.length === 0) {
+    const canUseRemoteSynthesis = answeringPolicy.allowSupplementalSources
+      || queryResult.evidenceBundle.supportingFacts.length > 0;
+
+    if (!requestWithModel.model || !canUseRemoteSynthesis) {
       this.logger.info('Remote answer synthesis enabled but unavailable; using grounded local synthesis.');
       return queryResult;
     }
@@ -971,10 +981,19 @@ export class WikiChatParticipant {
         return queryResult;
       }
 
-      this.logger.info('Remote answer synthesis enabled for this response.');
-      stream.markdown('*Remote answer synthesis enabled for this response.*\n\n');
+      this.logger.info(`Remote answer synthesis enabled for this response in ${answeringPolicy.mode} mode.`);
+      stream.markdown(
+        answeringPolicy.allowSupplementalSources
+          ? '*Remote answer synthesis enabled for this response; flexible mode may supplement beyond the wiki when coverage is incomplete.*\n\n'
+          : '*Remote answer synthesis enabled for this response; synthesis is constrained to wiki evidence.*\n\n'
+      );
 
-      const prompt = buildDirectAnswerPrompt(queryResult.query, queryResult.evidenceBundle, previousTurn);
+      const prompt = buildDirectAnswerPrompt(
+        queryResult.query,
+        queryResult.evidenceBundle,
+        previousTurn,
+        answeringPolicy
+      );
       const response = await requestWithModel.model.sendRequest(
         [languageModelFactory.User(prompt)],
         {},
@@ -991,7 +1010,15 @@ export class WikiChatParticipant {
         return queryResult;
       }
 
-      return this.queryHandler.withDirectAnswer(queryResult, trimmedDirectAnswer);
+      const usedSupplementalKnowledge = answeringPolicy.allowSupplementalSources
+        && (
+          trimmedDirectAnswer.toLowerCase().includes('supplemental context:')
+          || queryResult.evidenceBundle.coverageAssessment !== 'complete'
+        );
+
+      return this.queryHandler.withDirectAnswer(queryResult, trimmedDirectAnswer, {
+        usedSupplementalKnowledge,
+      });
     } catch (error) {
       this.logger.warn(`Remote answer synthesis failed, falling back to grounded local answer: ${String(error)}`);
       return queryResult;
