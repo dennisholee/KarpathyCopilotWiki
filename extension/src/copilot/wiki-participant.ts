@@ -8,6 +8,8 @@ import { PreviousWikiTurn } from '../models/types';
 import { buildDirectAnswerPrompt, buildEffectiveQuery } from '../query/answerPrompt';
 import { IndexBuilder } from '../commands/indexRebuild';
 import { IngestOrchestrator } from '../ingest/ingestCommand';
+import { GuidelineTransformer } from '../ingest/guidelineTransformer';
+import { ExtractionService } from '../ingest/extractor';
 import { ModelMatcher } from '../modeling/modelMatcher';
 import { ProposalBuilder } from '../modeling/proposalBuilder';
 import { ContractValidator } from '../modeling/contractValidator';
@@ -23,6 +25,8 @@ export class WikiChatParticipant {
   private proposalBuilder: ProposalBuilder;
   private contractValidator: ContractValidator;
   private proposalFormatter: ProposalFormatter;
+  private guidelineTransformer: GuidelineTransformer;
+  private extractionService: ExtractionService;
   private conversationHistory: ConversationEntry[] = [];
   private lastQueryResult: QueryResult | null = null;
 
@@ -36,6 +40,8 @@ export class WikiChatParticipant {
     this.proposalBuilder = new ProposalBuilder();
     this.contractValidator = new ContractValidator();
     this.proposalFormatter = new ProposalFormatter();
+    this.guidelineTransformer = new GuidelineTransformer(logger);
+    this.extractionService = new ExtractionService(logger);
   }
 
   /**
@@ -87,7 +93,7 @@ export class WikiChatParticipant {
       if (command === 'rebuild') {
         return await this.handleRebuild(stream);
       } else if (command === 'ingest') {
-        return await this.handleIngest(stream, query);
+        return await this.handleIngest(stream, query, request, token);
       } else if (command === 'model') {
         return await this.handleModel(query, previousTurn, stream);
       } else if (command === 'ingest-help') {
@@ -338,7 +344,12 @@ export class WikiChatParticipant {
   /**
    * Handle ingest command
    */
-  private async handleIngest(stream: vscode.ChatResponseStream, sourceFile: string): Promise<vscode.ChatResult> {
+  private async handleIngest(
+    stream: vscode.ChatResponseStream,
+    sourceFile: string,
+    request: vscode.ChatRequest,
+    token: vscode.CancellationToken
+  ): Promise<vscode.ChatResult> {
     try {
       const trimmedSourceFile = sourceFile.trim();
 
@@ -355,7 +366,9 @@ export class WikiChatParticipant {
           async (progress) => {
             progress.report({ message: 'Scanning /raw directory...', increment: 0 });
 
+            const guidelineTargets = this.wikiManager.listRawFiles().filter((file) => file.startsWith('guidelines/'));
             const ingestSummary = await this.wikiManager.ingestFromRaw();
+            const rewriteSummary = await this.rewriteGuidelinePages(guidelineTargets, request, token);
             progress.report({ message: 'Rebuilding wiki index...', increment: 80 });
 
             const indexBuilder = new IndexBuilder(this.wikiManager.getWikiDir(), this.logger);
@@ -367,11 +380,20 @@ export class WikiChatParticipant {
               `- **Files Processed**: all supported files in /raw and nested folders\n` +
               `- **Pages Created**: ${ingestSummary.created}\n` +
               `- **Pages Updated**: ${ingestSummary.updated}\n` +
+              `- **Guideline Pages Rewritten**: ${rewriteSummary.rewritten}\n` +
+              `- **Guideline Rewrites Skipped**: ${rewriteSummary.skipped}\n` +
+              `- **Guideline Rewrite Failures**: ${rewriteSummary.failures.length}\n` +
               `- **File Failures**: ${ingestSummary.failures.length}\n` +
               `- **Index Pages Scanned**: ${indexStats.pagesIndexed}\n` +
               `- **Glossary Terms**: ${indexStats.termsInGlossary}\n` +
               `- **Categories Found**: ${indexStats.categoriesFound}\n\n` +
               'The wiki has been refreshed from the full raw corpus.' +
+              (rewriteSummary.failures.length > 0
+                ? `\n\n**Guideline rewrite failures:**\n${rewriteSummary.failures
+                    .slice(0, 10)
+                    .map((failure) => `- ${failure}`)
+                    .join('\n')}`
+                : '') +
               (ingestSummary.failures.length > 0
                 ? `\n\n**File failures:**\n${ingestSummary.failures
                     .slice(0, 10)
@@ -435,7 +457,12 @@ export class WikiChatParticipant {
           async (progress) => {
             progress.report({ message: 'Scanning selected raw folder...', increment: 0 });
 
+            const guidelineTargets = this.wikiManager
+              .listRawFiles()
+              .filter((file) => file.startsWith('guidelines/'))
+              .filter((file) => file === relativeDirectory || file.startsWith(`${relativeDirectory}/`));
             const ingestSummary = await this.wikiManager.ingestFromRaw(relativeDirectory);
+            const rewriteSummary = await this.rewriteGuidelinePages(guidelineTargets, request, token);
             progress.report({ message: 'Rebuilding wiki index...', increment: 80 });
 
             const indexBuilder = new IndexBuilder(this.wikiManager.getWikiDir(), this.logger);
@@ -448,11 +475,20 @@ export class WikiChatParticipant {
               `- **Files Matched**: ${fileCount}\n` +
               `- **Pages Created**: ${ingestSummary.created}\n` +
               `- **Pages Updated**: ${ingestSummary.updated}\n` +
+              `- **Guideline Pages Rewritten**: ${rewriteSummary.rewritten}\n` +
+              `- **Guideline Rewrites Skipped**: ${rewriteSummary.skipped}\n` +
+              `- **Guideline Rewrite Failures**: ${rewriteSummary.failures.length}\n` +
               `- **File Failures**: ${ingestSummary.failures.length}\n` +
               `- **Index Pages Scanned**: ${indexStats.pagesIndexed}\n` +
               `- **Glossary Terms**: ${indexStats.termsInGlossary}\n` +
               `- **Categories Found**: ${indexStats.categoriesFound}\n\n` +
               'The wiki has been refreshed from the selected raw folder.' +
+              (rewriteSummary.failures.length > 0
+                ? `\n\n**Guideline rewrite failures:**\n${rewriteSummary.failures
+                    .slice(0, 10)
+                    .map((failure) => `- ${failure}`)
+                    .join('\n')}`
+                : '') +
               (ingestSummary.failures.length > 0
                 ? `\n\n**File failures:**\n${ingestSummary.failures
                     .slice(0, 10)
@@ -533,6 +569,8 @@ export class WikiChatParticipant {
             maxPages: 10,
           });
 
+          const rewriteSummary = await this.rewriteGuidelinePages([rawRelativePath], request, token);
+
           const indexBuilder = new IndexBuilder(this.wikiManager.getWikiDir(), this.logger);
           await indexBuilder.rebuildIndex();
 
@@ -542,9 +580,18 @@ export class WikiChatParticipant {
             `- **Folder Group**: ${rawGroup || 'raw root'}\n` +
             `- **Pages Created**: ${result.pagesCreated.length}\n` +
             `- **Pages Updated**: ${result.pagesUpdated.length}\n` +
+            `- **Guideline Pages Rewritten**: ${rewriteSummary.rewritten}\n` +
+            `- **Guideline Rewrites Skipped**: ${rewriteSummary.skipped}\n` +
+            `- **Guideline Rewrite Failures**: ${rewriteSummary.failures.length}\n` +
             `- **Failed Pages**: ${result.failedPages.length}\n` +
             `- **Backlinks Inserted**: ${result.backlinksInserted}\n` +
-            `- **Duration**: ${(result.duration / 1000).toFixed(2)}s\n\n`;
+            `- **Duration**: ${(result.duration / 1000).toFixed(2)}s\n\n` +
+            (rewriteSummary.failures.length > 0
+              ? `**Guideline rewrite failures:**\n${rewriteSummary.failures
+                  .slice(0, 10)
+                  .map((failure) => `- ${failure}`)
+                  .join('\n')}\n\n`
+              : '');
 
           if (result.pagesCreated.length > 0) {
             stream.markdown(response + `**Created pages:**\n${result.pagesCreated.map((p) => `- ${p}`).join('\n')}`);
@@ -585,6 +632,74 @@ export class WikiChatParticipant {
 
     const normalized = command.trim().replace(/^\/+/, '').toLowerCase();
     return normalized || undefined;
+  }
+
+  private async rewriteGuidelinePages(
+    rawRelativePaths: string[],
+    request: vscode.ChatRequest,
+    token: vscode.CancellationToken
+  ): Promise<{ rewritten: number; skipped: number; failures: string[] }> {
+    const guidelineSources = rawRelativePaths
+      .filter((relativePath) => relativePath.startsWith('guidelines/'))
+      .map((relativePath) => `/raw/${relativePath}`);
+
+    if (guidelineSources.length === 0) {
+      return { rewritten: 0, skipped: 0, failures: [] };
+    }
+
+    const pages = await this.wikiManager.listPages();
+    const candidatePages = pages.filter((page) =>
+      (page.sourceReferences || []).some((reference) => guidelineSources.includes(reference))
+    );
+
+    const existingTitles = pages.map((page) => page.title);
+    let rewritten = 0;
+    let skipped = 0;
+    const failures: string[] = [];
+
+    for (const page of candidatePages) {
+      const matchingSource = (page.sourceReferences || []).find((reference) => guidelineSources.includes(reference));
+      if (!matchingSource) {
+        skipped++;
+        continue;
+      }
+
+      const sourceAbsolutePath = this.wikiManager.resolveRawFile(matchingSource.replace(/^\/raw\//, ''));
+      if (!sourceAbsolutePath) {
+        failures.push(`${page.id}: source-not-found`);
+        continue;
+      }
+
+      try {
+        const extraction = await this.extractionService.extractText(sourceAbsolutePath);
+        const rewriteResult = await this.guidelineTransformer.alignPageToGuideline({
+          page,
+          wikiDir: this.wikiManager.getWikiDir(),
+          sourceReference: matchingSource,
+          sourceText: extraction.text,
+          allowedBacklinks: existingTitles.filter((title) => title !== page.title),
+          request: request as vscode.ChatRequest & {
+            model?: {
+              sendRequest: (messages: unknown[], options: Record<string, never>, token: vscode.CancellationToken) => Promise<{ text: AsyncIterable<string> }>;
+            };
+          },
+          token,
+        });
+
+        if (rewriteResult.updated) {
+          rewritten++;
+        } else {
+          skipped++;
+          if (rewriteResult.reason && rewriteResult.reason !== 'remote-llm-disabled' && rewriteResult.reason !== 'chat-model-unavailable') {
+            failures.push(`${page.id}: ${rewriteResult.reason}`);
+          }
+        }
+      } catch (error) {
+        failures.push(`${page.id}: ${String(error)}`);
+      }
+    }
+
+    return { rewritten, skipped, failures };
   }
 
   private resolveSlashCommand(command: string, prompt: string): { command: string; query: string } {

@@ -42,6 +42,9 @@ jest.mock('vscode', () => ({
   Uri: {
     file: jest.fn((path) => ({ fsPath: path })),
   },
+  LanguageModelChatMessage: {
+    User: jest.fn((content) => ({ role: 'user', content })),
+  },
 }), { virtual: true });
 
 // Set test timeout

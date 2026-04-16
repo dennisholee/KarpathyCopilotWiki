@@ -14,6 +14,7 @@ import { Concept, ConceptExtractor } from './conceptExtractor';
 import { DraftGenerator } from './draftGenerator';
 import { BacklinkManager } from './backlinkManager';
 import { FilenameGenerator } from '../utils/filenameGenerator';
+import { TraceabilityValidator } from './validator';
 import { FrontmatterMetadata, generateFrontmatter, slugify } from '../utils/markdown-parser';
 
 export interface IngestOptions {
@@ -42,6 +43,8 @@ export class IngestOrchestrator {
   private draftGenerator: DraftGenerator;
   private backlinkManager: BacklinkManager;
   private filenameGenerator: FilenameGenerator;
+  private ingestMappingPath: string;
+  private allowRemoteLLM: boolean;
   private wikiDir: string;
   private statusProgress: vscode.Progress<{ message?: string; increment?: number }> | null = null;
 
@@ -54,6 +57,21 @@ export class IngestOrchestrator {
     this.draftGenerator = new DraftGenerator(logger);
     this.backlinkManager = new BacklinkManager(wikiDir, logger);
     this.filenameGenerator = new FilenameGenerator(wikiDir, logger);
+    this.ingestMappingPath = path.join(this.wikiDir, '.vscode', 'wiki-cache', 'ingest-mapping.json');
+
+    // Gate remote LLM usage by configuration to comply with constitution Local-First policy.
+    try {
+      const config = vscode.workspace.getConfiguration('wiki');
+      this.allowRemoteLLM = Boolean(config.get<boolean>('enableRemoteLLM', false));
+      if (!this.allowRemoteLLM) {
+        this.logger.info('Remote LLM usage disabled by configuration (wiki.enableRemoteLLM=false)');
+      } else {
+        this.logger.info('Remote LLM usage enabled by configuration (wiki.enableRemoteLLM=true)');
+      }
+    } catch (e) {
+      this.allowRemoteLLM = false;
+      this.logger.warn('Could not read wiki configuration for remote LLM gating; defaulting to disabled');
+    }
   }
 
   /**
@@ -128,6 +146,14 @@ export class IngestOrchestrator {
         );
       }
 
+      if (this.isGuidelineSource(options.sourceReference)) {
+        const singleConcept = this.buildFallbackConcept(options, extraction.metadata?.title);
+        concepts.splice(0, concepts.length, singleConcept);
+        this.logger.info(
+          `Guideline source detected; collapsing ingest to a single managed page "${singleConcept.text}"`
+        );
+      }
+
       this.logger.debug(`Extracted ${concepts.length} concepts`);
 
       if (concepts.length === 0) {
@@ -165,6 +191,16 @@ export class IngestOrchestrator {
 
           // Ensure page has valid filename and schema
           (draft as any).filename = filename;
+
+          // Validate traceability: must cite /raw source files per constitution
+          const trace = TraceabilityValidator.validate(draft);
+          if (!trace.valid) {
+            this.logger.warn(
+              `Skipping publish for concept "${concept.text}": missing /raw traceability (${trace.missingFields.join(', ')})`
+            );
+            result.failedPages.push(concept.text);
+            continue; // Do not publish pages that lack traceability
+          }
 
           // Write page to disk (with error handling)
           const pageContent = this.formatPageAsMarkdown(draft);
@@ -265,15 +301,64 @@ export class IngestOrchestrator {
     page: WikiPage,
     deterministicNameCounts: Map<string, number>
   ): string {
+    // If no sourceReference provided, use atomic filename generator
     if (!options.sourceReference) {
       return this.filenameGenerator.generateFilename();
     }
 
+    // For guideline-derived pages, enforce constitution-compliant YYYYMMDDNN filenames
+    if (options.sourceReference.startsWith('/raw/guidelines')) {
+      return this.getOrAssignFilenameForSource(options.sourceReference);
+    }
+
+    // Default: stable slug-based filename (preserves previous behavior for non-guideline sources)
     const stableBase = this.buildStableBaseName(options.sourceReference, page.id || page.title);
     const occurrence = (deterministicNameCounts.get(stableBase) || 0) + 1;
     deterministicNameCounts.set(stableBase, occurrence);
 
     return occurrence === 1 ? `${stableBase}.md` : `${stableBase}-${occurrence}.md`;
+  }
+
+  /**
+   * Mapping persistence to ensure idempotent filename assignment for guideline sources.
+   */
+  private getOrAssignFilenameForSource(sourceReference: string): string {
+    try {
+      const mapping = this.loadIngestMapping();
+      if (mapping[sourceReference]) {
+        return mapping[sourceReference];
+      }
+
+      const filename = this.filenameGenerator.generateFilename();
+      mapping[sourceReference] = filename;
+      this.saveIngestMapping(mapping);
+      return filename;
+    } catch (error) {
+      this.logger.warn(`Failed to persist ingest mapping: ${String(error)} — falling back to generated filename`);
+      return this.filenameGenerator.generateFilename();
+    }
+  }
+
+  private loadIngestMapping(): Record<string, string> {
+    try {
+      if (fs.existsSync(this.ingestMappingPath)) {
+        const raw = fs.readFileSync(this.ingestMappingPath, 'utf-8');
+        return JSON.parse(raw || '{}');
+      }
+    } catch (error) {
+      this.logger.warn(`Could not load ingest mapping: ${String(error)}`);
+    }
+    return {};
+  }
+
+  private saveIngestMapping(mapping: Record<string, string>): void {
+    try {
+      const dir = path.dirname(this.ingestMappingPath);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(this.ingestMappingPath, JSON.stringify(mapping, null, 2), 'utf-8');
+    } catch (error) {
+      this.logger.warn(`Could not save ingest mapping: ${String(error)}`);
+    }
   }
 
   private buildStableBaseName(sourceReference: string, pageId: string): string {
@@ -295,6 +380,10 @@ export class IngestOrchestrator {
       confidence: 0.95,
       context: options.sourceReference || options.sourceFile,
     };
+  }
+
+  private isGuidelineSource(sourceReference?: string): boolean {
+    return Boolean(sourceReference && sourceReference.startsWith('/raw/guidelines/'));
   }
 
   private stripTrailingExtension(filePath: string): string {

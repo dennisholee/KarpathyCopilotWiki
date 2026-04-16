@@ -130,6 +130,11 @@
           "default": false,
           "description": "Explicitly allow remote chat-model synthesis for the Direct Answer section; grounded local evidence selection remains active and the extension will disclose when remote synthesis is used"
         },
+        "wiki.enableRemoteLLM": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the extension to call remote LLM services for guideline transformations when explicitly enabled. Defaults to false to comply with local-first policy."
+        },
         "wiki.enableDebugLogging": {
           "type": "boolean",
           "default": false,

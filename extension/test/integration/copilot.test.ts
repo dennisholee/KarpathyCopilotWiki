@@ -5,6 +5,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
+import * as vscode from 'vscode';
 import { Logger } from '../../src/utils/logger';
 import { SearchEngine } from '../../src/search/search-engine';
 import { WikiManager } from '../../src/wiki/wiki-manager';
@@ -965,6 +966,67 @@ Settlement status is required before posting.
           (page.sourceReferences || []).includes('/raw/OECD_Guidance_for_the_Standard_Audit_File_Tax_v2.0.pdf')
         )
       ).toBe(true);
+    });
+
+    it('should use llm chat to align guideline pages during targeted ingest', async () => {
+      const participant = new WikiChatParticipant(searchEngine, wikiManager, logger);
+      const stream = {
+        markdown: jest.fn(),
+      };
+
+      (vscode.workspace.getConfiguration as jest.Mock).mockReturnValue({
+        get: jest.fn((key: string, defaultValue: unknown) => {
+          if (key === 'enableRemoteLLM') {
+            return true;
+          }
+          return defaultValue;
+        }),
+      });
+
+      fs.mkdirSync(path.join(tempDir, 'raw', 'guidelines'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempDir, 'raw', 'guidelines', 'customer-guideline.md'),
+        '# Customer Guideline\nCustomer onboarding rules and lifecycle guidance.'
+      );
+
+      const model = {
+        sendRequest: jest.fn(async () => ({
+          text: (async function* () {
+            yield '# Customer Guideline\n\n## Summary\nAligned guideline summary.\n\n## Definition\nCustomer onboarding guidance grounded in source material.\n';
+          })(),
+        })),
+      };
+
+      await participant.handle(
+        {
+          prompt: 'guidelines/customer-guideline.md',
+          command: 'ingest',
+          model,
+        } as unknown as never,
+        {} as never,
+        stream as never,
+        {} as never
+      );
+
+      const output = stream.markdown.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('Guideline Pages Rewritten**: 1');
+      expect(output).toContain('Guideline Rewrites Skipped**: 0');
+      expect(output).toContain('Guideline Rewrite Failures**: 0');
+      expect(output).toContain('Pages Created**: 1');
+      expect(output).toContain('Pages Updated**: 0');
+
+      const pages = await wikiManager.listPages();
+      const guidelinePages = pages.filter((page) =>
+        (page.sourceReferences || []).includes('/raw/guidelines/customer-guideline.md')
+      );
+      expect(guidelinePages).toHaveLength(1);
+
+      const [generatedPage] = guidelinePages;
+
+      expect(generatedPage).toBeDefined();
+      const persisted = fs.readFileSync(path.join(wikiDir, `${generatedPage?.id}.md`), 'utf-8');
+      expect(persisted).toContain('## Definition');
+      expect(model.sendRequest).toHaveBeenCalled();
     });
   });
 
